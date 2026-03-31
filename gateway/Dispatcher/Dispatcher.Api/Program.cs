@@ -1,44 +1,49 @@
+using Dispatcher.Application.Forwarding;
+using Dispatcher.Application.Logging;
+using Dispatcher.Application.Routing;
+using Dispatcher.Infrastructure.Http;
+using Dispatcher.Infrastructure.Logging;
+using Dispatcher.Infrastructure.Routing;
+using Dispatcher.Api.Middleware;
+using MongoDB.Driver;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+// MongoDB
+var mongoClient = new MongoClient("mongodb://mongodb:27017");
+var database = mongoClient.GetDatabase("dispatcher_db");
+var logsCollection = database.GetCollection<Dispatcher.Domain.Logging.LogEntry>("logs");
+var routesCollection = database.GetCollection<Dispatcher.Domain.Routing.RouteConfig>("routes");
+
+// Dependency Injection
+builder.Services.AddSingleton(logsCollection);
+builder.Services.AddSingleton(routesCollection);
+builder.Services.AddScoped<ILogRepository, MongoLogRepository>();
+builder.Services.AddScoped<IRouteRepository, MongoRouteRepository>();
+builder.Services.AddScoped<IRequestForwarder, HttpRequestForwarder>();
+builder.Services.AddHttpClient<HttpRequestForwarder>();
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+    });
+});
+
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast")
-.WithOpenApi();
-
+app.UseCors();
+app.UseMiddleware<AuthorizationMiddleware>();
+app.MapControllers();
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
