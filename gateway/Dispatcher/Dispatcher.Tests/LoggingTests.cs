@@ -32,6 +32,26 @@ public class LoggingTests
         var result = await repository.GetRecentAsync(5);
         Assert.Equal(5, result.Count);
     }
+
+    [Fact]
+    public async Task GetByStatusCode_ShouldReturnLogs_WhenStatusMatches()
+    {
+        ILogRepository repository = new FakeLogRepository();
+        await repository.SaveAsync(new LogEntry("GET", "/products", 200));
+        await repository.SaveAsync(new LogEntry("GET", "/orders", 404));
+        var result = await repository.GetByStatusCodeAsync(200);
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public async Task GetTotalCount_ShouldReturnCorrectCount_WhenCalled()
+    {
+        ILogRepository repository = new FakeLogRepository();
+        await repository.SaveAsync(new LogEntry("GET", "/products", 200));
+        await repository.SaveAsync(new LogEntry("POST", "/orders", 201));
+        var result = await repository.GetTotalCountAsync();
+        Assert.Equal(2, result);
+    }
 }
 
 public class FakeLogRepository : ILogRepository
@@ -49,4 +69,10 @@ public class FakeLogRepository : ILogRepository
 
     public Task<List<LogEntry>> GetRecentAsync(int count)
         => Task.FromResult(_logs.TakeLast(count).ToList());
+
+    public Task<List<LogEntry>> GetByStatusCodeAsync(int statusCode)
+        => Task.FromResult(_logs.Where(l => l.StatusCode == statusCode).ToList());
+
+    public Task<int> GetTotalCountAsync()
+        => Task.FromResult(_logs.Count);
 }
