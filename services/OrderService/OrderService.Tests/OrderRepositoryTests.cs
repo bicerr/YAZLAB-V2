@@ -40,6 +40,26 @@ public class OrderRepositoryTests
         var result = await repository.GetByCustomerEmailAsync("test@test.com");
         Assert.Single(result);
     }
+
+    [Fact]
+    public async Task GetByStatusAsync_ShouldReturnOrders_WhenStatusMatches()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var order = new Order("product-1", 2, "test@test.com");
+        await repository.CreateAsync(order);
+        var result = await repository.GetByStatusAsync("Beklemede");
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public async Task ExistsAsync_ShouldReturnTrue_WhenOrderExists()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var order = new Order("product-1", 2, "test@test.com");
+        await repository.CreateAsync(order);
+        var result = await repository.ExistsAsync(order.Id);
+        Assert.True(result);
+    }
 }
 
 public class FakeOrderRepository : IOrderRepository
@@ -54,6 +74,9 @@ public class FakeOrderRepository : IOrderRepository
 
     public Task<List<Order>> GetByCustomerEmailAsync(string email)
         => Task.FromResult(_orders.Where(o => o.CustomerEmail == email).ToList());
+
+    public Task<List<Order>> GetByStatusAsync(string status)
+        => Task.FromResult(_orders.Where(o => o.Status == status).ToList());
 
     public Task CreateAsync(Order order)
     {
@@ -76,4 +99,7 @@ public class FakeOrderRepository : IOrderRepository
         _orders.Remove(order);
         return Task.FromResult(true);
     }
+
+    public Task<bool> ExistsAsync(string id)
+        => Task.FromResult(_orders.Any(o => o.Id == id));
 }
