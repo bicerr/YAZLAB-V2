@@ -23,6 +23,10 @@ builder.Services.AddScoped<IRouteRepository, MongoRouteRepository>();
 builder.Services.AddScoped<IRequestForwarder, HttpRequestForwarder>();
 builder.Services.AddHttpClient<HttpRequestForwarder>();
 
+// YARP
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
@@ -46,4 +50,5 @@ if (app.Environment.IsDevelopment())
 app.UseCors();
 app.UseMiddleware<AuthorizationMiddleware>();
 app.MapControllers();
+app.MapReverseProxy();
 app.Run();
