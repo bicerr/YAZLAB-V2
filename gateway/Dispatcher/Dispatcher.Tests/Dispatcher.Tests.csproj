@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dispatcher.Domain\Dispatcher.Domain.csproj" />
+    <ProjectReference Include="..\Dispatcher.Application\Dispatcher.Application.csproj" />
   </ItemGroup>
 
 </Project>
