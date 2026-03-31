@@ -2,9 +2,6 @@ using OrderService.Domain.Entities;
 
 namespace OrderService.Application.Repositories;
 
-/// <summary>
-/// Sipariş veri erişim katmanı için sözleşme
-/// </summary>
 public interface IOrderRepository
 {
     Task<List<Order>> GetAllAsync();

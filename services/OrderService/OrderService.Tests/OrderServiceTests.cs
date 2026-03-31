@@ -33,6 +33,35 @@ public class OrderServiceTests
         var result = await service.UpdateStatusAsync("nonexistent-id", "Tamamlandı");
         Assert.False(result);
     }
+
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        var result = await service.GetByIdAsync("nonexistent-id");
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetByCustomerEmailAsync_ShouldReturnOrders_WhenExists()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        await service.CreateAsync(new OrderDto("product-1", 2, "test@test.com"));
+        var result = await service.GetByCustomerEmailAsync("test@test.com");
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public async Task GetByStatusAsync_ShouldReturnOrders_WhenStatusMatches()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        await service.CreateAsync(new OrderDto("product-1", 2, "test@test.com"));
+        var result = await service.GetByStatusAsync("Beklemede");
+        Assert.Single(result);
+    }
 }
 
 public class FakeOrderService : IOrderService
@@ -46,6 +75,15 @@ public class FakeOrderService : IOrderService
 
     public async Task<List<Order>> GetAllAsync()
         => await _repository.GetAllAsync();
+
+    public async Task<Order?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+
+    public async Task<List<Order>> GetByCustomerEmailAsync(string email)
+        => await _repository.GetByCustomerEmailAsync(email);
+
+    public async Task<List<Order>> GetByStatusAsync(string status)
+        => await _repository.GetByStatusAsync(status);
 
     public async Task<OrderResult> CreateAsync(OrderDto dto)
     {
