@@ -22,6 +22,16 @@ public class UserRepositoryTests
         var result = await repository.GetByEmailAsync("test@test.com");
         Assert.NotNull(result);
     }
+
+    [Fact]
+    public async Task ExistsByEmailAsync_ShouldReturnTrue_WhenUserExists()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        var user = new User("test@test.com", "hashedPassword", "user");
+        await repository.CreateAsync(user);
+        var result = await repository.ExistsByEmailAsync("test@test.com");
+        Assert.True(result);
+    }
 }
 
 public class FakeUserRepository : IUserRepository
@@ -36,4 +46,7 @@ public class FakeUserRepository : IUserRepository
         _users.Add(user);
         return Task.CompletedTask;
     }
+
+    public Task<bool> ExistsByEmailAsync(string email)
+        => Task.FromResult(_users.Any(u => u.Email == email));
 }
