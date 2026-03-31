@@ -41,6 +41,26 @@ public class ProductRepositoryTests
         var result = await repository.GetAllAsync();
         Assert.Empty(result);
     }
+
+    [Fact]
+    public async Task GetByCategoryAsync_ShouldReturnProducts_WhenCategoryMatches()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        await repository.CreateAsync(product);
+        var result = await repository.GetByCategoryAsync("Elektronik");
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public async Task ExistsAsync_ShouldReturnTrue_WhenProductExists()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        await repository.CreateAsync(product);
+        var result = await repository.ExistsAsync(product.Id);
+        Assert.True(result);
+    }
 }
 
 public class FakeProductRepository : IProductRepository
@@ -52,6 +72,9 @@ public class FakeProductRepository : IProductRepository
 
     public Task<Product?> GetByIdAsync(string id)
         => Task.FromResult(_products.FirstOrDefault(p => p.Id == id));
+
+    public Task<List<Product>> GetByCategoryAsync(string category)
+        => Task.FromResult(_products.Where(p => p.Category == category).ToList());
 
     public Task CreateAsync(Product product)
     {
@@ -75,4 +98,7 @@ public class FakeProductRepository : IProductRepository
         _products.Remove(existing);
         return Task.FromResult(true);
     }
+
+    public Task<bool> ExistsAsync(string id)
+        => Task.FromResult(_products.Any(p => p.Id == id));
 }
