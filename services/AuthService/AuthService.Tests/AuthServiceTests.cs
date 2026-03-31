@@ -37,6 +37,15 @@ public class AuthServiceTests
         Assert.True(result.Success);
         Assert.NotNull(result.Token);
     }
+
+    [Fact]
+    public async Task ValidateToken_ShouldReturnTrue_WhenTokenIsValid()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        IAuthService authService = new FakeAuthService(repository);
+        var result = await authService.ValidateTokenAsync("fake-token");
+        Assert.True(result);
+    }
 }
 
 public class FakeAuthService : IAuthService
@@ -63,4 +72,7 @@ public class FakeAuthService : IAuthService
         if (user == null) return new AuthResult(false, null, "Kullanıcı bulunamadı.");
         return new AuthResult(true, "fake-token", null);
     }
+
+    public Task<bool> ValidateTokenAsync(string token)
+        => Task.FromResult(!string.IsNullOrEmpty(token));
 }
