@@ -64,6 +64,16 @@ services:
     networks:
       - internal    
 
+  payment-service:
+    build:
+      context: ./services/PaymentService
+      dockerfile: PaymentService.Api/Dockerfile
+    container_name: payment-service
+    depends_on:
+      - mongodb
+    networks:
+      - internal
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
