@@ -40,6 +40,26 @@ public class PaymentRepositoryTests
         var result = await repository.GetByIdAsync("nonexistent-id");
         Assert.Null(result);
     }
+
+    [Fact]
+    public async Task GetByStatusAsync_ShouldReturnPayments_WhenStatusMatches()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        await repository.CreateAsync(payment);
+        var result = await repository.GetByStatusAsync("Pending");
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public async Task ExistsAsync_ShouldReturnTrue_WhenPaymentExists()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        await repository.CreateAsync(payment);
+        var result = await repository.ExistsAsync(payment.Id);
+        Assert.True(result);
+    }
 }
 
 public class FakePaymentRepository : IPaymentRepository
@@ -54,6 +74,9 @@ public class FakePaymentRepository : IPaymentRepository
 
     public Task<Payment?> GetByOrderIdAsync(string orderId)
         => Task.FromResult(_payments.FirstOrDefault(p => p.OrderId == orderId));
+
+    public Task<List<Payment>> GetByStatusAsync(string status)
+        => Task.FromResult(_payments.Where(p => p.Status == status).ToList());
 
     public Task CreateAsync(Payment payment)
     {
@@ -77,4 +100,7 @@ public class FakePaymentRepository : IPaymentRepository
         _payments.Remove(existing);
         return Task.FromResult(true);
     }
+
+    public Task<bool> ExistsAsync(string id)
+        => Task.FromResult(_payments.Any(p => p.Id == id));
 }
