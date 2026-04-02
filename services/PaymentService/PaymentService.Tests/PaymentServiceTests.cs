@@ -33,6 +33,26 @@ public class PaymentServiceTests
         var result = await service.CompleteAsync("nonexistent-id");
         Assert.False(result);
     }
+
+    [Fact]
+    public async Task GetByOrderId_ShouldReturnPayment_WhenExists()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        IPaymentService service = new FakePaymentService(repository);
+        await service.CreateAsync(new PaymentDto("order-1", 150.00m, "CreditCard"));
+        var result = await service.GetByOrderIdAsync("order-1");
+        Assert.NotNull(result);
+    }
+
+    [Fact]
+    public async Task GetByStatus_ShouldReturnPayments_WhenStatusMatches()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        IPaymentService service = new FakePaymentService(repository);
+        await service.CreateAsync(new PaymentDto("order-1", 150.00m, "CreditCard"));
+        var result = await service.GetByStatusAsync("Pending");
+        Assert.Single(result);
+    }
 }
 
 public class FakePaymentService : IPaymentService
@@ -46,6 +66,15 @@ public class FakePaymentService : IPaymentService
 
     public async Task<List<Payment>> GetAllAsync()
         => await _repository.GetAllAsync();
+
+    public async Task<Payment?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+
+    public async Task<Payment?> GetByOrderIdAsync(string orderId)
+        => await _repository.GetByOrderIdAsync(orderId);
+
+    public async Task<List<Payment>> GetByStatusAsync(string status)
+        => await _repository.GetByStatusAsync(status);
 
     public async Task<PaymentResult> CreateAsync(PaymentDto dto)
     {
