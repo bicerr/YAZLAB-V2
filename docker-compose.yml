@@ -54,6 +54,16 @@ services:
     networks:
       - internal
 
+  notification-service:
+    build:
+      context: ./services/NotificationService
+      dockerfile: NotificationService.Api/Dockerfile
+    container_name: notification-service
+    depends_on:
+      - mongodb
+    networks:
+      - internal    
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
