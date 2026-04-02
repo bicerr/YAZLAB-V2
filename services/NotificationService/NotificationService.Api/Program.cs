@@ -1,41 +1,33 @@
+using MongoDB.Driver;
+using NotificationService.Application.Repositories;
+using NotificationService.Application.Services;
+using NotificationService.Infrastructure.Repositories;
+using NotificationService.Infrastructure.Services;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+// MongoDB
+var mongoClient = new MongoClient("mongodb://mongodb:27017");
+var database = mongoClient.GetDatabase("notification_db");
+var notificationsCollection = database.GetCollection<NotificationService.Domain.Entities.Notification>("notifications");
+
+// Dependency Injection
+builder.Services.AddSingleton(notificationsCollection);
+builder.Services.AddScoped<INotificationRepository, MongoNotificationRepository>();
+builder.Services.AddScoped<INotificationService, NotificationServiceImpl>();
+
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
-
+app.UseAuthorization();
+app.MapControllers();
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
