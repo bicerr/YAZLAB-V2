@@ -1,14 +1,29 @@
+using MongoDB.Bson.Serialization.Attributes;
+
 namespace Dispatcher.Domain.Logging;
 
 public class LogEntry
 {
-    public string Id { get; private set; }
-    public string Method { get; private set; }
-    public string Path { get; private set; }
-    public int StatusCode { get; private set; }
-    public DateTime Timestamp { get; private set; }
-    public string? ClientIp { get; private set; }
-    public long ResponseTimeMs { get; private set; }
+    [BsonId]
+    public string Id { get; set; } = string.Empty;
+    
+    [BsonElement("Method")]
+    public string Method { get; set; } = string.Empty;
+    
+    [BsonElement("Path")]
+    public string Path { get; set; } = string.Empty;
+    
+    [BsonElement("StatusCode")]
+    public int StatusCode { get; set; }
+    
+    [BsonElement("Timestamp")]
+    public DateTime Timestamp { get; set; }
+    
+    [BsonElement("ClientIp")]
+    public string? ClientIp { get; set; }
+    
+    [BsonElement("ResponseTimeMs")]
+    public long ResponseTimeMs { get; set; }
 
     public LogEntry(string method, string path, int statusCode, string? clientIp = null, long responseTimeMs = 0)
     {
@@ -23,4 +38,6 @@ public class LogEntry
         ClientIp = clientIp;
         ResponseTimeMs = responseTimeMs;
     }
+
+    public LogEntry() { }
 }

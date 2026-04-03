@@ -20,7 +20,7 @@ public class AuthorizationMiddleware
         var path = context.Request.Path.Value?.ToLower() ?? "";
         var startTime = DateTime.UtcNow;
 
-        if (!path.StartsWith("/auth") && !path.StartsWith("/admin"))
+        if (!path.StartsWith("/auth") && !path.StartsWith("/admin") && !path.StartsWith("/metrics") )
         {
             var token = context.Request.Headers["Authorization"].FirstOrDefault();
             if (string.IsNullOrEmpty(token))
