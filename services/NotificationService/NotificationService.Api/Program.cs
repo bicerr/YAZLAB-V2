@@ -1,4 +1,5 @@
 using MongoDB.Driver;
+using Prometheus;
 using NotificationService.Application.Repositories;
 using NotificationService.Application.Services;
 using NotificationService.Infrastructure.Repositories;
@@ -28,6 +29,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseHttpMetrics();
 app.UseAuthorization();
 app.MapControllers();
+app.MapMetrics();
 app.Run();
