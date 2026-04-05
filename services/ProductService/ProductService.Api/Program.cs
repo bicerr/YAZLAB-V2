@@ -3,6 +3,7 @@ using ProductService.Application.Repositories;
 using ProductService.Application.Services;
 using ProductService.Infrastructure.Repositories;
 using ProductService.Infrastructure.Services;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,6 +29,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseHttpMetrics();
 app.UseAuthorization();
 app.MapControllers();
+app.MapMetrics();
 app.Run();

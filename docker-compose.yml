@@ -62,7 +62,7 @@ services:
     depends_on:
       - mongodb
     networks:
-      - internal    
+      - internal
 
   payment-service:
     build:
@@ -92,12 +92,15 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
     networks:
       - internal
       - external
 
 volumes:
   mongo_data:
+  grafana_data:
 
 networks:
   internal:

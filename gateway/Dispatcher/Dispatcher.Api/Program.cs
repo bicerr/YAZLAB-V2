@@ -6,6 +6,7 @@ using Dispatcher.Infrastructure.Logging;
 using Dispatcher.Infrastructure.Routing;
 using Dispatcher.Api.Middleware;
 using MongoDB.Driver;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -48,7 +49,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+app.UseHttpMetrics();
 app.UseMiddleware<AuthorizationMiddleware>();
 app.MapControllers();
+app.MapMetrics();
 app.MapReverseProxy();
 app.Run();

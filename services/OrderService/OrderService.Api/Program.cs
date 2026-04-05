@@ -3,6 +3,7 @@ using OrderService.Application.Repositories;
 using OrderService.Application.Services;
 using OrderService.Infrastructure.Repositories;
 using OrderService.Infrastructure.Services;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,6 +29,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseHttpMetrics();
 app.UseAuthorization();
 app.MapControllers();
+app.MapMetrics();
 app.Run();

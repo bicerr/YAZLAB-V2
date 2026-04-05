@@ -3,6 +3,7 @@ using AuthService.Application.Services;
 using AuthService.Infrastructure.Repositories;
 using AuthService.Infrastructure.Services;
 using MongoDB.Driver;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,6 +29,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseHttpMetrics();
 app.UseAuthorization();
 app.MapControllers();
+app.MapMetrics();
 app.Run();
