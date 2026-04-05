@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using NotificationService.Application.DTOs;
 using NotificationService.Application.Services;
+using Prometheus;
 
 namespace NotificationService.Api.Controllers;
 
@@ -8,6 +9,13 @@ namespace NotificationService.Api.Controllers;
 [Route("api/[controller]")]
 public class NotificationsController : ControllerBase
 {
+    private static readonly Counter NotificationsCreatedCounter = Metrics.CreateCounter(
+        "notifications_created_total", "Bildirim oluşturma istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter NotificationsReadCounter = Metrics.CreateCounter(
+        "notifications_marked_read_total", "Okundu olarak işaretlenen bildirimler");
+    private static readonly Counter NotificationsDeletedCounter = Metrics.CreateCounter(
+        "notifications_deleted_total", "Silinen bildirimler", new CounterConfiguration { LabelNames = new[] { "result" } });
+
     private readonly INotificationService _notificationService;
 
     public NotificationsController(INotificationService notificationService)
@@ -47,7 +55,12 @@ public class NotificationsController : ControllerBase
     public async Task<IActionResult> Create([FromBody] NotificationDto dto)
     {
         var result = await _notificationService.CreateAsync(dto);
-        if (!result.Success) return BadRequest(result.ErrorMessage);
+        if (!result.Success)
+        {
+            NotificationsCreatedCounter.WithLabels("failure").Inc();
+            return BadRequest(result.ErrorMessage);
+        }
+        NotificationsCreatedCounter.WithLabels("success").Inc();
         return Created("", result);
     }
 
@@ -56,6 +69,7 @@ public class NotificationsController : ControllerBase
     {
         var result = await _notificationService.MarkAsReadAsync(id);
         if (!result) return NotFound("Bildirim bulunamadı.");
+        NotificationsReadCounter.Inc();
         return Ok("Bildirim okundu olarak işaretlendi.");
     }
 
@@ -63,7 +77,12 @@ public class NotificationsController : ControllerBase
     public async Task<IActionResult> Delete(string id)
     {
         var result = await _notificationService.DeleteAsync(id);
-        if (!result) return NotFound("Bildirim bulunamadı.");
+        if (!result)
+        {
+            NotificationsDeletedCounter.WithLabels("failure").Inc();
+            return NotFound("Bildirim bulunamadı.");
+        }
+        NotificationsDeletedCounter.WithLabels("success").Inc();
         return Ok("Bildirim silindi.");
     }
 }

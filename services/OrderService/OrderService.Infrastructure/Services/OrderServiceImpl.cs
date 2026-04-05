@@ -30,7 +30,7 @@ public class OrderServiceImpl : IOrderService
     {
         var order = new Order(dto.ProductId, dto.Quantity, dto.CustomerEmail);
         await _repository.CreateAsync(order);
-        return new OrderResult(true, null);
+        return new OrderResult(true, null, order.Id);
     }
 
     public async Task<bool> UpdateStatusAsync(string id, string status)

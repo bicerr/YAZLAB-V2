@@ -47,19 +47,22 @@ public class LogsController : ControllerBase
         sb.Append($"<div class='card'><h3>Son Güncelleme</h3><p style='font-size:14px'>{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC</p></div>");
         sb.Append("</div>");
 
-        sb.Append("<table><thead><tr><th>#</th><th>Zaman</th><th>Method</th><th>Path</th><th>Status</th></tr></thead><tbody>");
+        sb.Append("<table><thead><tr><th>#</th><th>Zaman</th><th>Method</th><th>Path</th><th>Status</th><th>Süre (ms)</th><th>IP</th></tr></thead><tbody>");
 
         int i = 1;
         foreach (var l in logs)
         {
             var method = l.Method.ToLower();
             var statusClass = $"s{l.StatusCode}";
+            var durationColor = l.ResponseTimeMs > 500 ? "#f38ba8" : l.ResponseTimeMs > 200 ? "#fab387" : "#a6e3a1";
             sb.Append("<tr>");
             sb.Append($"<td>{i++}</td>");
             sb.Append($"<td>{l.Timestamp:yyyy-MM-dd HH:mm:ss}</td>");
             sb.Append($"<td><span class='badge {method}'>{l.Method}</span></td>");
             sb.Append($"<td>{l.Path}</td>");
             sb.Append($"<td class='{statusClass}'>{l.StatusCode}</td>");
+            sb.Append($"<td style='color:{durationColor};font-weight:bold'>{l.ResponseTimeMs} ms</td>");
+            sb.Append($"<td style='color:#89dceb;font-size:12px'>{l.ClientIp ?? "-"}</td>");
             sb.Append("</tr>");
         }
 

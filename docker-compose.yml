@@ -77,8 +77,13 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--storage.tsdb.retention.time=30d'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
     ports:
       - "9090:9090"
     networks:
@@ -94,6 +99,8 @@ services:
       - prometheus
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/etc/grafana/dashboards
     networks:
       - internal
       - external
@@ -101,6 +108,7 @@ services:
 volumes:
   mongo_data:
   grafana_data:
+  prometheus_data:
 
 networks:
   internal:

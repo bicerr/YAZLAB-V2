@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using OrderService.Application.DTOs;
 using OrderService.Application.Services;
+using Prometheus;
 
 namespace OrderService.Api.Controllers;
 
@@ -8,6 +9,13 @@ namespace OrderService.Api.Controllers;
 [Route("api/[controller]")]
 public class OrdersController : ControllerBase
 {
+    private static readonly Counter OrdersCreatedCounter = Metrics.CreateCounter(
+        "orders_created_total", "Sipariş oluşturma istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter OrdersStatusUpdatedCounter = Metrics.CreateCounter(
+        "orders_status_updated_total", "Sipariş durum güncellemeleri", new CounterConfiguration { LabelNames = new[] { "status" } });
+    private static readonly Counter OrdersDeletedCounter = Metrics.CreateCounter(
+        "orders_deleted_total", "Sipariş silme istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+
     private readonly IOrderService _orderService;
 
     public OrdersController(IOrderService orderService)
@@ -48,7 +56,12 @@ public class OrdersController : ControllerBase
     public async Task<IActionResult> Create([FromBody] OrderDto dto)
     {
         var result = await _orderService.CreateAsync(dto);
-        if (!result.Success) return BadRequest(result.ErrorMessage);
+        if (!result.Success)
+        {
+            OrdersCreatedCounter.WithLabels("failure").Inc();
+            return BadRequest(result.ErrorMessage);
+        }
+        OrdersCreatedCounter.WithLabels("success").Inc();
         return Created("", result);
     }
 
@@ -57,6 +70,7 @@ public class OrdersController : ControllerBase
     {
         var result = await _orderService.UpdateStatusAsync(id, status);
         if (!result) return NotFound("Sipariş bulunamadı.");
+        OrdersStatusUpdatedCounter.WithLabels(status).Inc();
         return Ok("Sipariş güncellendi.");
     }
 
@@ -64,7 +78,12 @@ public class OrdersController : ControllerBase
     public async Task<IActionResult> Delete(string id)
     {
         var result = await _orderService.DeleteAsync(id);
-        if (!result) return NotFound("Sipariş bulunamadı.");
+        if (!result)
+        {
+            OrdersDeletedCounter.WithLabels("failure").Inc();
+            return NotFound("Sipariş bulunamadı.");
+        }
+        OrdersDeletedCounter.WithLabels("success").Inc();
         return Ok("Sipariş silindi.");
     }
 }

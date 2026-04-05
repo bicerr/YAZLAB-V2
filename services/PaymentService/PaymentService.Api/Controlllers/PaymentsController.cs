@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using PaymentService.Application.DTOs;
 using PaymentService.Application.Services;
+using Prometheus;
 
 namespace PaymentService.Api.Controllers;
 
@@ -8,6 +9,13 @@ namespace PaymentService.Api.Controllers;
 [Route("api/[controller]")]
 public class PaymentsController : ControllerBase
 {
+    private static readonly Counter PaymentsCreatedCounter = Metrics.CreateCounter(
+        "payments_created_total", "Ödeme oluşturma istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter PaymentsCompletedCounter = Metrics.CreateCounter(
+        "payments_completed_total", "Tamamlanan ödemeler");
+    private static readonly Counter PaymentsFailedCounter = Metrics.CreateCounter(
+        "payments_failed_total", "Başarısız ödemeler");
+
     private readonly IPaymentService _paymentService;
 
     public PaymentsController(IPaymentService paymentService)
@@ -49,7 +57,12 @@ public class PaymentsController : ControllerBase
     public async Task<IActionResult> Create([FromBody] PaymentDto dto)
     {
         var result = await _paymentService.CreateAsync(dto);
-        if (!result.Success) return BadRequest(result.ErrorMessage);
+        if (!result.Success)
+        {
+            PaymentsCreatedCounter.WithLabels("failure").Inc();
+            return BadRequest(result.ErrorMessage);
+        }
+        PaymentsCreatedCounter.WithLabels("success").Inc();
         return Created("", result);
     }
 
@@ -58,6 +71,7 @@ public class PaymentsController : ControllerBase
     {
         var result = await _paymentService.CompleteAsync(id);
         if (!result) return NotFound("Ödeme bulunamadı.");
+        PaymentsCompletedCounter.Inc();
         return Ok("Ödeme tamamlandı.");
     }
 
@@ -66,6 +80,7 @@ public class PaymentsController : ControllerBase
     {
         var result = await _paymentService.FailAsync(id);
         if (!result) return NotFound("Ödeme bulunamadı.");
+        PaymentsFailedCounter.Inc();
         return Ok("Ödeme başarısız olarak işaretlendi.");
     }
 }
