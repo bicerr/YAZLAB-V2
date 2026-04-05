@@ -1,0 +1,3331 @@
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Api/Controllers/DispatcherController.cs
+============================================================
+using Dispatcher.Application.Forwarding;
+using Dispatcher.Application.Logging;
+using Dispatcher.Application.Routing;
+using Microsoft.AspNetCore.Mvc;
+namespace Dispatcher.Api.Controllers;
+[ApiController]
+[Route("api/dispatcher")]
+public class DispatcherController : ControllerBase
+{
+    private readonly ILogRepository _logRepository;
+    private readonly IRouteRepository _routeRepository;
+    public DispatcherController(ILogRepository logRepository, IRouteRepository routeRepository)
+    {
+        _logRepository = logRepository;
+        _routeRepository = routeRepository;
+    }
+    [HttpGet("logs")]
+    public async Task<IActionResult> GetLogs()
+    {
+        var logs = await _logRepository.GetRecentAsync(100);
+        return Ok(logs);
+    }
+    [HttpGet("logs/status/{statusCode}")]
+    public async Task<IActionResult> GetLogsByStatus(int statusCode)
+    {
+        var logs = await _logRepository.GetByStatusCodeAsync(statusCode);
+        return Ok(logs);
+    }
+    [HttpGet("routes")]
+    public async Task<IActionResult> GetRoutes()
+    {
+        var routes = await _routeRepository.GetAllAsync();
+        return Ok(routes);
+    }
+    [HttpPost("routes")]
+    public async Task<IActionResult> AddRoute([FromBody] RouteRequest request)
+    {
+        var route = new Dispatcher.Domain.Routing.RouteConfig(request.Path, request.Target);
+        await _routeRepository.AddAsync(route);
+        return Created("", route);
+    }
+    [HttpDelete("routes/{id}")]
+    public async Task<IActionResult> DeleteRoute(string id)
+    {
+        var result = await _routeRepository.DeleteAsync(id);
+        if (!result) return NotFound("Route bulunamadı.");
+        return Ok("Route silindi.");
+    }
+}
+public record RouteRequest(string Path, string Target);
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Api/Controllers/LogsController.cs
+============================================================
+using Dispatcher.Application.Logging;
+using Microsoft.AspNetCore.Mvc;
+using System.Text;
+namespace Dispatcher.Api.Controllers;
+[ApiController]
+[Route("admin")]
+public class LogsController : ControllerBase
+{
+    private readonly ILogRepository _logRepository;
+    public LogsController(ILogRepository logRepository)
+    {
+        _logRepository = logRepository;
+    }
+    [HttpGet("logs")]
+    public async Task<IActionResult> GetLogs()
+    {
+        var logs = await _logRepository.GetRecentAsync(100);
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><head><title>Dispatcher Log Tablosu</title><meta charset='UTF-8'>");
+        sb.Append("<style>");
+        sb.Append("body{font-family:Arial,sans-serif;margin:20px;background:#1e1e2e;color:#cdd6f4}");
+        sb.Append("h1{color:#89b4fa}");
+        sb.Append("table{width:100%;border-collapse:collapse;margin-top:20px}");
+        sb.Append("th{background:#313244;color:#89b4fa;padding:12px;text-align:left}");
+        sb.Append("td{padding:10px;border-bottom:1px solid #313244}");
+        sb.Append("tr:hover{background:#313244}");
+        sb.Append(".s200,.s201{color:#a6e3a1;font-weight:bold}");
+        sb.Append(".s401,.s403,.s404{color:#fab387;font-weight:bold}");
+        sb.Append(".s500{color:#f38ba8;font-weight:bold}");
+        sb.Append(".badge{padding:3px 8px;border-radius:4px;font-size:12px;color:white}");
+        sb.Append(".get{background:#1e66f5}.post{background:#40a02b}.put{background:#df8e1d}.delete{background:#d20f39}");
+        sb.Append(".summary{display:flex;gap:20px;margin:20px 0}");
+        sb.Append(".card{background:#313244;padding:15px 25px;border-radius:8px}");
+        sb.Append(".card h3{margin:0;color:#89b4fa}.card p{margin:5px 0 0;font-size:24px;font-weight:bold}");
+        sb.Append("</style></head><body>");
+        sb.Append("<h1>Dispatcher Log Tablosu</h1>");
+        sb.Append("<div class='summary'>");
+        sb.Append($"<div class='card'><h3>Toplam İstek</h3><p>{logs.Count}</p></div>");
+        sb.Append($"<div class='card'><h3>Başarılı</h3><p style='color:#a6e3a1'>{logs.Count(l => l.StatusCode < 400)}</p></div>");
+        sb.Append($"<div class='card'><h3>Hatalı</h3><p style='color:#f38ba8'>{logs.Count(l => l.StatusCode >= 400)}</p></div>");
+        sb.Append($"<div class='card'><h3>Son Güncelleme</h3><p style='font-size:14px'>{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC</p></div>");
+        sb.Append("</div>");
+        sb.Append("<table><thead><tr><th>#</th><th>Zaman</th><th>Method</th><th>Path</th><th>Status</th><th>Süre (ms)</th><th>IP</th></tr></thead><tbody>");
+        int i = 1;
+        foreach (var l in logs)
+        {
+            var method = l.Method.ToLower();
+            var statusClass = $"s{l.StatusCode}";
+            var durationColor = l.ResponseTimeMs > 500 ? "#f38ba8" : l.ResponseTimeMs > 200 ? "#fab387" : "#a6e3a1";
+            sb.Append("<tr>");
+            sb.Append($"<td>{i++}</td>");
+            sb.Append($"<td>{l.Timestamp:yyyy-MM-dd HH:mm:ss}</td>");
+            sb.Append($"<td><span class='badge {method}'>{l.Method}</span></td>");
+            sb.Append($"<td>{l.Path}</td>");
+            sb.Append($"<td class='{statusClass}'>{l.StatusCode}</td>");
+            sb.Append($"<td style='color:{durationColor};font-weight:bold'>{l.ResponseTimeMs} ms</td>");
+            sb.Append($"<td style='color:#89dceb;font-size:12px'>{l.ClientIp ?? "-"}</td>");
+            sb.Append("</tr>");
+        }
+        sb.Append("</tbody></table></body></html>");
+        return Content(sb.ToString(), "text/html");
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Api/Middleware/AuthorizationMiddleware.cs
+============================================================
+using Dispatcher.Application.Logging;
+using Dispatcher.Domain.Logging;
+using Microsoft.IdentityModel.Tokens;
+using Prometheus;
+using System.Diagnostics;
+using System.IdentityModel.Tokens.Jwt;
+using System.Text;
+namespace Dispatcher.Api.Middleware;
+public class AuthorizationMiddleware
+{
+    private static readonly Counter ForwardedRequestsCounter = Metrics.CreateCounter(
+        "dispatcher_forwarded_requests_total", "Dispatcher üzerinden yönlendirilen istekler",
+        new CounterConfiguration { LabelNames = new[] { "service", "method", "status" } });
+    private static readonly Counter AuthFailuresCounter = Metrics.CreateCounter(
+        "dispatcher_auth_failures_total", "Dispatcher yetkilendirme hataları");
+    private readonly RequestDelegate _next;
+    private readonly ILogRepository _logRepository;
+    private readonly string _jwtKey = "supersecretkey1234567890abcdefgh";
+    public AuthorizationMiddleware(RequestDelegate next, ILogRepository logRepository)
+    {
+        _next = next;
+        _logRepository = logRepository;
+    }
+    public async Task InvokeAsync(HttpContext context)
+    {
+        var path = context.Request.Path.Value?.ToLower() ?? "";
+        if (path == "/favicon.ico" || path == "/metrics" || path.StartsWith("/swagger"))
+        {
+            await _next(context);
+            return;
+        }
+        var sw = Stopwatch.StartNew();
+        var clientIp = context.Connection.RemoteIpAddress?.ToString();
+        if (!path.StartsWith("/auth") && !path.StartsWith("/admin"))
+        {
+            var token = context.Request.Headers["Authorization"].FirstOrDefault()?.Replace("Bearer ", "");
+            if (string.IsNullOrEmpty(token) || !ValidateToken(token))
+            {
+                sw.Stop();
+                context.Response.StatusCode = 401;
+                await context.Response.WriteAsync("Unauthorized");
+                AuthFailuresCounter.Inc();
+                ForwardedRequestsCounter.WithLabels(ResolveService(path), context.Request.Method, "401").Inc();
+                await _logRepository.SaveAsync(new LogEntry(
+                    context.Request.Method,
+                    context.Request.Path,
+                    401,
+                    clientIp,
+                    sw.ElapsedMilliseconds));
+                return;
+            }
+        }
+        await _next(context);
+        sw.Stop();
+        var service = ResolveService(path);
+        ForwardedRequestsCounter.WithLabels(service, context.Request.Method, context.Response.StatusCode.ToString()).Inc();
+        await _logRepository.SaveAsync(new LogEntry(
+            context.Request.Method,
+            context.Request.Path,
+            context.Response.StatusCode,
+            clientIp,
+            sw.ElapsedMilliseconds));
+    }
+    private static string ResolveService(string path)
+    {
+        if (path.StartsWith("/auth")) return "auth-service";
+        if (path.StartsWith("/api/products")) return "product-service";
+        if (path.StartsWith("/api/orders")) return "order-service";
+        if (path.StartsWith("/api/payments")) return "payment-service";
+        if (path.StartsWith("/api/notifications")) return "notification-service";
+        if (path.StartsWith("/admin")) return "dispatcher";
+        return "unknown";
+    }
+    private bool ValidateToken(string token)
+    {
+        try
+        {
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var key = Encoding.UTF8.GetBytes(_jwtKey);
+            tokenHandler.ValidateToken(token, new TokenValidationParameters
+            {
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(key),
+                ValidateIssuer = false,
+                ValidateAudience = false,
+                ClockSkew = TimeSpan.Zero
+            }, out _);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Api/Program.cs
+============================================================
+using Dispatcher.Application.Forwarding;
+using Dispatcher.Application.Logging;
+using Dispatcher.Application.Routing;
+using Dispatcher.Infrastructure.Http;
+using Dispatcher.Infrastructure.Logging;
+using Dispatcher.Infrastructure.Routing;
+using Dispatcher.Api.Middleware;
+using MongoDB.Driver;
+using Prometheus;
+var builder = WebApplication.CreateBuilder(args);
+var mongoClient = new MongoClient("mongodb:
+var database = mongoClient.GetDatabase("dispatcher_db");
+var logsCollection = database.GetCollection<Dispatcher.Domain.Logging.LogEntry>("logs");
+var routesCollection = database.GetCollection<Dispatcher.Domain.Routing.RouteConfig>("routes");
+builder.Services.AddSingleton(logsCollection);
+builder.Services.AddSingleton(routesCollection);
+builder.Services.AddScoped<ILogRepository, MongoLogRepository>();
+builder.Services.AddScoped<IRouteRepository, MongoRouteRepository>();
+builder.Services.AddScoped<IRequestForwarder, HttpRequestForwarder>();
+builder.Services.AddHttpClient<HttpRequestForwarder>();
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+    });
+});
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+var app = builder.Build();
+app.UseSwagger();
+app.UseSwaggerUI();
+app.UseCors();
+app.UseHttpMetrics();
+app.UseMiddleware<AuthorizationMiddleware>();
+app.MapControllers();
+app.MapMetrics();
+app.MapReverseProxy();
+app.Run();
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Application/Forwarding/IRequestForwarder.cs
+============================================================
+namespace Dispatcher.Application.Forwarding;
+public record ForwardResult(bool IsSuccess, int StatusCode, string? Content, string? ErrorMessage = null);
+public interface IRequestForwarder
+{
+    Task<ForwardResult> ForwardAsync(string method, string targetUrl, string? body);
+    Task<ForwardResult> ForwardWithHeadersAsync(string method, string targetUrl, string? body, Dictionary<string, string> headers);
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Application/Logging/ILogRepository.cs
+============================================================
+using Dispatcher.Domain.Logging;
+namespace Dispatcher.Application.Logging;
+public interface ILogRepository
+{
+    Task SaveAsync(LogEntry log);
+    Task<List<LogEntry>> GetAllAsync();
+    Task<List<LogEntry>> GetRecentAsync(int count);
+    Task<List<LogEntry>> GetByStatusCodeAsync(int statusCode);
+    Task<int> GetTotalCountAsync();
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Application/Routing/IRouteRepository.cs
+============================================================
+using Dispatcher.Domain.Routing;
+namespace Dispatcher.Application.Routing;
+public interface IRouteRepository
+{
+    Task<List<RouteConfig>> GetAllAsync();
+    Task<List<RouteConfig>> GetActiveAsync();
+    Task<RouteConfig?> GetByPathAsync(string path);
+    Task AddAsync(RouteConfig route);
+    Task<bool> DeleteAsync(string id);
+    Task<bool> UpdateAsync(RouteConfig route);
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Domain/Logging/LogEntry.cs
+============================================================
+using MongoDB.Bson.Serialization.Attributes;
+namespace Dispatcher.Domain.Logging;
+public class LogEntry
+{
+    [BsonId]
+    public string Id { get; set; } = string.Empty;
+    [BsonElement("Method")]
+    public string Method { get; set; } = string.Empty;
+    [BsonElement("Path")]
+    public string Path { get; set; } = string.Empty;
+    [BsonElement("StatusCode")]
+    public int StatusCode { get; set; }
+    [BsonElement("Timestamp")]
+    public DateTime Timestamp { get; set; }
+    [BsonElement("ClientIp")]
+    public string? ClientIp { get; set; }
+    [BsonElement("ResponseTimeMs")]
+    public long ResponseTimeMs { get; set; }
+    public LogEntry(string method, string path, int statusCode, string? clientIp = null, long responseTimeMs = 0)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(method);
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        Id = Guid.NewGuid().ToString();
+        Method = method;
+        Path = path;
+        StatusCode = statusCode;
+        Timestamp = DateTime.UtcNow;
+        ClientIp = clientIp;
+        ResponseTimeMs = responseTimeMs;
+    }
+    public LogEntry() { }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Domain/Routing/RouteConfig.cs
+============================================================
+namespace Dispatcher.Domain.Routing;
+public class RouteConfig
+{
+    public string Id { get; private set; }
+    public string Path { get; private set; }
+    public string Target { get; private set; }
+    public bool IsActive { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public RouteConfig(string path, string target)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        ArgumentException.ThrowIfNullOrEmpty(target);
+        Id = Guid.NewGuid().ToString();
+        Path = path;
+        Target = target;
+        IsActive = true;
+        CreatedAt = DateTime.UtcNow;
+    }
+    public void Deactivate() => IsActive = false;
+    public void Activate() => IsActive = true;
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Infrastructure/Http/HttpRequestForwarder.cs
+============================================================
+using Dispatcher.Application.Forwarding;
+namespace Dispatcher.Infrastructure.Http;
+public class HttpRequestForwarder : IRequestForwarder
+{
+    private readonly HttpClient _httpClient;
+    public HttpRequestForwarder(HttpClient httpClient)
+    {
+        _httpClient = httpClient;
+    }
+    public async Task<ForwardResult> ForwardAsync(string method, string targetUrl, string? body)
+    {
+        try
+        {
+            var request = new HttpRequestMessage(new HttpMethod(method), targetUrl);
+            if (body != null)
+                request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.SendAsync(request);
+            var content = await response.Content.ReadAsStringAsync();
+            return new ForwardResult(response.IsSuccessStatusCode, (int)response.StatusCode, content);
+        }
+        catch (Exception ex)
+        {
+            return new ForwardResult(false, 503, null, ex.Message);
+        }
+    }
+    public async Task<ForwardResult> ForwardWithHeadersAsync(string method, string targetUrl, string? body, Dictionary<string, string> headers)
+    {
+        try
+        {
+            var request = new HttpRequestMessage(new HttpMethod(method), targetUrl);
+            if (body != null)
+                request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+            foreach (var header in headers)
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            var response = await _httpClient.SendAsync(request);
+            var content = await response.Content.ReadAsStringAsync();
+            return new ForwardResult(response.IsSuccessStatusCode, (int)response.StatusCode, content);
+        }
+        catch (Exception ex)
+        {
+            return new ForwardResult(false, 503, null, ex.Message);
+        }
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Infrastructure/Logging/MongoLogRepository.cs
+============================================================
+using Dispatcher.Application.Logging;
+using Dispatcher.Domain.Logging;
+using MongoDB.Driver;
+namespace Dispatcher.Infrastructure.Logging;
+public class MongoLogRepository : ILogRepository
+{
+    private readonly IMongoCollection<LogEntry> _logs;
+    public MongoLogRepository(IMongoCollection<LogEntry> logs)
+    {
+        _logs = logs;
+    }
+    public async Task SaveAsync(LogEntry log)
+        => await _logs.InsertOneAsync(log);
+    public async Task<List<LogEntry>> GetAllAsync()
+        => await _logs.Find(_ => true).SortByDescending(l => l.Timestamp).ToListAsync();
+    public async Task<List<LogEntry>> GetRecentAsync(int count)
+        => await _logs.Find(_ => true).SortByDescending(l => l.Timestamp).Limit(count).ToListAsync();
+    public async Task<List<LogEntry>> GetByStatusCodeAsync(int statusCode)
+        => await _logs.Find(l => l.StatusCode == statusCode).ToListAsync();
+    public async Task<int> GetTotalCountAsync()
+    {
+        var count = await _logs.CountDocumentsAsync(_ => true);
+        return (int)count;
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Infrastructure/Routing/MongoRouteRepository.cs
+============================================================
+using Dispatcher.Application.Routing;
+using Dispatcher.Domain.Routing;
+using MongoDB.Driver;
+namespace Dispatcher.Infrastructure.Routing;
+public class MongoRouteRepository : IRouteRepository
+{
+    private readonly IMongoCollection<RouteConfig> _routes;
+    public MongoRouteRepository(IMongoCollection<RouteConfig> routes)
+    {
+        _routes = routes;
+    }
+    public async Task<List<RouteConfig>> GetAllAsync()
+        => await _routes.Find(_ => true).ToListAsync();
+    public async Task<List<RouteConfig>> GetActiveAsync()
+        => await _routes.Find(r => r.IsActive).ToListAsync();
+    public async Task<RouteConfig?> GetByPathAsync(string path)
+        => await _routes.Find(r => r.Path == path).FirstOrDefaultAsync();
+    public async Task AddAsync(RouteConfig route)
+        => await _routes.InsertOneAsync(route);
+    public async Task<bool> DeleteAsync(string id)
+    {
+        var result = await _routes.DeleteOneAsync(r => r.Id == id);
+        return result.DeletedCount > 0;
+    }
+    public async Task<bool> UpdateAsync(RouteConfig route)
+    {
+        var result = await _routes.ReplaceOneAsync(r => r.Id == route.Id, route);
+        return result.MatchedCount > 0;
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Tests/ForwardingTests.cs
+============================================================
+using Dispatcher.Application.Forwarding;
+namespace Dispatcher.Tests;
+public class ForwardingTests
+{
+    [Fact]
+    public async Task Forward_ShouldReturnSuccess_WhenServiceIsReachable()
+    {
+        IRequestForwarder forwarder = new FakeRequestForwarder(true);
+        var result = await forwarder.ForwardAsync("GET", "/products", null);
+        Assert.True(result.IsSuccess);
+    }
+    [Fact]
+    public async Task Forward_ShouldReturnFailure_WhenServiceIsUnreachable()
+    {
+        IRequestForwarder forwarder = new FakeRequestForwarder(false);
+        var result = await forwarder.ForwardAsync("GET", "/products", null);
+        Assert.False(result.IsSuccess);
+    }
+    [Fact]
+    public async Task Forward_ShouldReturnStatusCode_WhenCalled()
+    {
+        IRequestForwarder forwarder = new FakeRequestForwarder(true);
+        var result = await forwarder.ForwardAsync("GET", "/products", null);
+        Assert.Equal(200, result.StatusCode);
+    }
+    [Fact]
+    public async Task ForwardWithHeaders_ShouldReturnSuccess_WhenCalled()
+    {
+        IRequestForwarder forwarder = new FakeRequestForwarder(true);
+        var headers = new Dictionary<string, string> { { "Authorization", "Bearer token" } };
+        var result = await forwarder.ForwardWithHeadersAsync("GET", "/products", null, headers);
+        Assert.True(result.IsSuccess);
+    }
+}
+public class FakeRequestForwarder : IRequestForwarder
+{
+    private readonly bool _shouldSucceed;
+    public FakeRequestForwarder(bool shouldSucceed)
+    {
+        _shouldSucceed = shouldSucceed;
+    }
+    public Task<ForwardResult> ForwardAsync(string method, string targetUrl, string? body)
+    {
+        if (_shouldSucceed)
+            return Task.FromResult(new ForwardResult(true, 200, "OK"));
+        return Task.FromResult(new ForwardResult(false, 503, "Service Unavailable"));
+    }
+    public Task<ForwardResult> ForwardWithHeadersAsync(string method, string targetUrl, string? body, Dictionary<string, string> headers)
+    {
+        if (_shouldSucceed)
+            return Task.FromResult(new ForwardResult(true, 200, "OK"));
+        return Task.FromResult(new ForwardResult(false, 503, "Service Unavailable"));
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Tests/LogEntryTests.cs
+============================================================
+using Dispatcher.Domain.Logging;
+namespace Dispatcher.Tests;
+public class LogEntryTests
+{
+    [Fact]
+    public void LogEntry_ShouldHaveMethod_WhenCreated()
+    {
+        var log = new LogEntry("GET", "/products", 200);
+        Assert.Equal("GET", log.Method);
+    }
+    [Fact]
+    public void LogEntry_ShouldHavePath_WhenCreated()
+    {
+        var log = new LogEntry("GET", "/products", 200);
+        Assert.Equal("/products", log.Path);
+    }
+    [Fact]
+    public void LogEntry_ShouldHaveStatusCode_WhenCreated()
+    {
+        var log = new LogEntry("GET", "/products", 200);
+        Assert.Equal(200, log.StatusCode);
+    }
+    [Fact]
+    public void LogEntry_ShouldHaveTimestamp_WhenCreated()
+    {
+        var log = new LogEntry("GET", "/products", 200);
+        Assert.True(log.Timestamp <= DateTime.UtcNow);
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Tests/LoggingTests.cs
+============================================================
+using Dispatcher.Application.Logging;
+using Dispatcher.Domain.Logging;
+namespace Dispatcher.Tests;
+public class LoggingTests
+{
+    [Fact]
+    public async Task SaveLog_ShouldAddLog_WhenCalled()
+    {
+        ILogRepository repository = new FakeLogRepository();
+        var log = new LogEntry("GET", "/products", 200);
+        await repository.SaveAsync(log);
+        var result = await repository.GetAllAsync();
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetAllLogs_ShouldReturnEmpty_WhenNoLogs()
+    {
+        ILogRepository repository = new FakeLogRepository();
+        var result = await repository.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task GetRecentLogs_ShouldReturnLimitedLogs_WhenCalled()
+    {
+        ILogRepository repository = new FakeLogRepository();
+        for (int i = 0; i < 10; i++)
+            await repository.SaveAsync(new LogEntry("GET", "/products", 200));
+        var result = await repository.GetRecentAsync(5);
+        Assert.Equal(5, result.Count);
+    }
+    [Fact]
+    public async Task GetByStatusCode_ShouldReturnLogs_WhenStatusMatches()
+    {
+        ILogRepository repository = new FakeLogRepository();
+        await repository.SaveAsync(new LogEntry("GET", "/products", 200));
+        await repository.SaveAsync(new LogEntry("GET", "/orders", 404));
+        var result = await repository.GetByStatusCodeAsync(200);
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetTotalCount_ShouldReturnCorrectCount_WhenCalled()
+    {
+        ILogRepository repository = new FakeLogRepository();
+        await repository.SaveAsync(new LogEntry("GET", "/products", 200));
+        await repository.SaveAsync(new LogEntry("POST", "/orders", 201));
+        var result = await repository.GetTotalCountAsync();
+        Assert.Equal(2, result);
+    }
+}
+public class FakeLogRepository : ILogRepository
+{
+    private readonly List<LogEntry> _logs = new();
+    public Task SaveAsync(LogEntry log)
+    {
+        _logs.Add(log);
+        return Task.CompletedTask;
+    }
+    public Task<List<LogEntry>> GetAllAsync()
+        => Task.FromResult(_logs.ToList());
+    public Task<List<LogEntry>> GetRecentAsync(int count)
+        => Task.FromResult(_logs.TakeLast(count).ToList());
+    public Task<List<LogEntry>> GetByStatusCodeAsync(int statusCode)
+        => Task.FromResult(_logs.Where(l => l.StatusCode == statusCode).ToList());
+    public Task<int> GetTotalCountAsync()
+        => Task.FromResult(_logs.Count);
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Tests/RouteConfigTests.cs
+============================================================
+using Dispatcher.Domain.Routing;
+namespace Dispatcher.Tests;
+public class RouteConfigTests
+{
+    [Fact]
+    public void RouteConfig_ShouldHavePath_WhenCreated()
+    {
+        var route = new RouteConfig("/products", "http:
+        Assert.Equal("/products", route.Path);
+    }
+    [Fact]
+    public void RouteConfig_ShouldHaveTarget_WhenCreated()
+    {
+        var route = new RouteConfig("/products", "http:
+        Assert.Equal("http:
+    }
+    [Fact]
+    public void RouteConfig_ShouldBeActive_WhenCreated()
+    {
+        var route = new RouteConfig("/products", "http:
+        Assert.True(route.IsActive);
+    }
+}
+
+============================================================
+DOSYA: gateway/Dispatcher/Dispatcher.Tests/RoutingTests.cs
+============================================================
+using Dispatcher.Application.Routing;
+using Dispatcher.Domain.Routing;
+namespace Dispatcher.Tests;
+public class RoutingTests
+{
+    [Fact]
+    public async Task GetAllRoutes_ShouldReturnEmpty_WhenNoRoutes()
+    {
+        IRouteRepository repository = new FakeRouteRepository();
+        var result = await repository.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task AddRoute_ShouldAddRoute_WhenCalled()
+    {
+        IRouteRepository repository = new FakeRouteRepository();
+        var route = new RouteConfig("/products", "http:
+        await repository.AddAsync(route);
+        var result = await repository.GetAllAsync();
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetByPath_ShouldReturnRoute_WhenExists()
+    {
+        IRouteRepository repository = new FakeRouteRepository();
+        var route = new RouteConfig("/products", "http:
+        await repository.AddAsync(route);
+        var result = await repository.GetByPathAsync("/products");
+        Assert.NotNull(result);
+    }
+    [Fact]
+    public async Task GetActiveRoutes_ShouldReturnOnlyActiveRoutes_WhenCalled()
+    {
+        IRouteRepository repository = new FakeRouteRepository();
+        var route = new RouteConfig("/products", "http:
+        await repository.AddAsync(route);
+        var result = await repository.GetActiveAsync();
+        Assert.Single(result);
+    }
+}
+public class FakeRouteRepository : IRouteRepository
+{
+    private readonly List<RouteConfig> _routes = new();
+    public Task<List<RouteConfig>> GetAllAsync()
+        => Task.FromResult(_routes.ToList());
+    public Task<List<RouteConfig>> GetActiveAsync()
+        => Task.FromResult(_routes.Where(r => r.IsActive).ToList());
+    public Task<RouteConfig?> GetByPathAsync(string path)
+        => Task.FromResult(_routes.FirstOrDefault(r => r.Path == path));
+    public Task AddAsync(RouteConfig route)
+    {
+        _routes.Add(route);
+        return Task.CompletedTask;
+    }
+    public Task<bool> DeleteAsync(string id)
+    {
+        var route = _routes.FirstOrDefault(r => r.Id == id);
+        if (route == null) return Task.FromResult(false);
+        _routes.Remove(route);
+        return Task.FromResult(true);
+    }
+    public Task<bool> UpdateAsync(RouteConfig route)
+    {
+        var existing = _routes.FirstOrDefault(r => r.Id == route.Id);
+        if (existing == null) return Task.FromResult(false);
+        _routes.Remove(existing);
+        _routes.Add(route);
+        return Task.FromResult(true);
+    }
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Api/Controllers/AuthController.cs
+============================================================
+using AuthService.Application.DTOs;
+using AuthService.Application.Services;
+using Microsoft.AspNetCore.Mvc;
+using Prometheus;
+namespace AuthService.Api.Controllers;
+[ApiController]
+[Route("auth")]
+public class AuthController : ControllerBase
+{
+    private static readonly Counter LoginCounter = Metrics.CreateCounter(
+        "auth_login_total", "Login istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter RegisterCounter = Metrics.CreateCounter(
+        "auth_register_total", "Kayıt istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private readonly IAuthService _authService;
+    public AuthController(IAuthService authService)
+    {
+        _authService = authService;
+    }
+    [HttpPost("register")]
+    public async Task<IActionResult> Register([FromBody] RegisterRequest request)
+    {
+        var result = await _authService.RegisterAsync(request);
+        if (!result.Success)
+        {
+            RegisterCounter.WithLabels("failure").Inc();
+            return Conflict(result.ErrorMessage);
+        }
+        RegisterCounter.WithLabels("success").Inc();
+        return Ok("Kayıt başarılı.");
+    }
+    [HttpPost("login")]
+    public async Task<IActionResult> Login([FromBody] LoginRequest request)
+    {
+        var result = await _authService.LoginAsync(request);
+        if (!result.Success)
+        {
+            LoginCounter.WithLabels("failure").Inc();
+            return Unauthorized(result.ErrorMessage);
+        }
+        LoginCounter.WithLabels("success").Inc();
+        return Ok(new { token = result.Token });
+    }
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Api/Program.cs
+============================================================
+using AuthService.Application.Repositories;
+using AuthService.Application.Services;
+using AuthService.Infrastructure.Repositories;
+using AuthService.Infrastructure.Services;
+using MongoDB.Driver;
+using Prometheus;
+var builder = WebApplication.CreateBuilder(args);
+var mongoClient = new MongoClient("mongodb:
+var database = mongoClient.GetDatabase("auth_db");
+var usersCollection = database.GetCollection<AuthService.Domain.Entities.User>("users");
+builder.Services.AddSingleton(usersCollection);
+builder.Services.AddScoped<IUserRepository, MongoUserRepository>();
+builder.Services.AddScoped<IAuthService, JwtAuthService>();
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+var app = builder.Build();
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+app.UseHttpMetrics();
+app.UseAuthorization();
+app.MapControllers();
+app.MapMetrics();
+app.Run();
+
+============================================================
+DOSYA: services/AuthService/AuthService.Application/DTOs/AuthResult.cs
+============================================================
+namespace AuthService.Application.DTOs;
+public record AuthResult(bool Success, string? Token, string? ErrorMessage);
+
+============================================================
+DOSYA: services/AuthService/AuthService.Application/DTOs/LoginRequest.cs
+============================================================
+namespace AuthService.Application.DTOs;
+public record LoginRequest(string Email, string Password);
+
+============================================================
+DOSYA: services/AuthService/AuthService.Application/DTOs/RegisterRequest.cs
+============================================================
+namespace AuthService.Application.DTOs;
+public record RegisterRequest(string Email, string Password);
+
+============================================================
+DOSYA: services/AuthService/AuthService.Application/Repositories/IUserRepository.cs
+============================================================
+using AuthService.Domain.Entities;
+namespace AuthService.Application.Repositories;
+public interface IUserRepository
+{
+    Task<User?> GetByEmailAsync(string email);
+    Task CreateAsync(User user);
+    Task<bool> ExistsByEmailAsync(string email);
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Application/Services/IAuthService.cs
+============================================================
+using AuthService.Application.DTOs;
+namespace AuthService.Application.Services;
+public interface IAuthService
+{
+    Task<AuthResult> RegisterAsync(RegisterRequest request);
+    Task<AuthResult> LoginAsync(LoginRequest request);
+    Task<bool> ValidateTokenAsync(string token);
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Domain/Entities/User.cs
+============================================================
+namespace AuthService.Domain.Entities;
+public class User
+{
+    public string Id { get; private set; }
+    public string Email { get; private set; }
+    public string PasswordHash { get; private set; }
+    public string Role { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public User(string email, string passwordHash, string role)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(email);
+        ArgumentException.ThrowIfNullOrEmpty(passwordHash);
+        ArgumentException.ThrowIfNullOrEmpty(role);
+        Id = Guid.NewGuid().ToString();
+        Email = email.ToLowerInvariant();
+        PasswordHash = passwordHash;
+        Role = role;
+        CreatedAt = DateTime.UtcNow;
+    }
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Infrastructure/Repositories/MongoUserRepository.cs
+============================================================
+using AuthService.Application.Repositories;
+using AuthService.Domain.Entities;
+using MongoDB.Driver;
+namespace AuthService.Infrastructure.Repositories;
+public class MongoUserRepository : IUserRepository
+{
+    private readonly IMongoCollection<User> _users;
+    public MongoUserRepository(IMongoCollection<User> users)
+    {
+        _users = users;
+    }
+    public async Task<User?> GetByEmailAsync(string email)
+        => await _users.Find(u => u.Email == email).FirstOrDefaultAsync();
+    public async Task CreateAsync(User user)
+        => await _users.InsertOneAsync(user);
+    public async Task<bool> ExistsByEmailAsync(string email)
+    {
+        var count = await _users.CountDocumentsAsync(u => u.Email == email);
+        return count > 0;
+    }
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Infrastructure/Services/JwtAuthService.cs
+============================================================
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using AuthService.Application.DTOs;
+using AuthService.Application.Repositories;
+using AuthService.Application.Services;
+using AuthService.Domain.Entities;
+using Microsoft.IdentityModel.Tokens;
+namespace AuthService.Infrastructure.Services;
+public class JwtAuthService : IAuthService
+{
+    private readonly IUserRepository _repository;
+    private readonly string _jwtKey = "supersecretkey1234567890abcdefgh";
+    public JwtAuthService(IUserRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<AuthResult> RegisterAsync(RegisterRequest request)
+    {
+        var exists = await _repository.ExistsByEmailAsync(request.Email);
+        if (exists) return new AuthResult(false, null, "Bu email zaten kayıtlı.");
+        var passwordHash = BCrypt.Net.BCrypt.HashPassword(request.Password);
+        var user = new User(request.Email, passwordHash, "user");
+        await _repository.CreateAsync(user);
+        return new AuthResult(true, null, null);
+    }
+    public async Task<AuthResult> LoginAsync(LoginRequest request)
+    {
+        var user = await _repository.GetByEmailAsync(request.Email);
+        if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+            return new AuthResult(false, null, "Email veya şifre hatalı.");
+        var token = GenerateToken(user);
+        return new AuthResult(true, token, null);
+    }
+    public Task<bool> ValidateTokenAsync(string token)
+    {
+        try
+        {
+            var handler = new JwtSecurityTokenHandler();
+            var key = Encoding.UTF8.GetBytes(_jwtKey);
+            handler.ValidateToken(token.Replace("Bearer ", ""), new TokenValidationParameters
+            {
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(key),
+                ValidateIssuer = false,
+                ValidateAudience = false
+            }, out _);
+            return Task.FromResult(true);
+        }
+        catch
+        {
+            return Task.FromResult(false);
+        }
+    }
+    private string GenerateToken(User user)
+    {
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var key = Encoding.UTF8.GetBytes(_jwtKey);
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity(new[]
+            {
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Role, user.Role)
+            }),
+            Expires = DateTime.UtcNow.AddHours(24),
+            SigningCredentials = new SigningCredentials(
+                new SymmetricSecurityKey(key),
+                SecurityAlgorithms.HmacSha256Signature)
+        };
+        var token = tokenHandler.CreateToken(tokenDescriptor);
+        return tokenHandler.WriteToken(token);
+    }
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Tests/AuthServiceTests.cs
+============================================================
+using AuthService.Application.Services;
+using AuthService.Application.Repositories;
+using AuthService.Application.DTOs;
+using AuthService.Domain.Entities;
+namespace AuthService.Tests;
+public class AuthServiceTests
+{
+    [Fact]
+    public async Task Register_ShouldReturnSuccess_WhenEmailNotTaken()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        IAuthService authService = new FakeAuthService(repository);
+        var result = await authService.RegisterAsync(new RegisterRequest("test@test.com", "password123"));
+        Assert.True(result.Success);
+    }
+    [Fact]
+    public async Task Register_ShouldReturnFailure_WhenEmailAlreadyTaken()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        var user = new User("test@test.com", "hashedPassword", "user");
+        await repository.CreateAsync(user);
+        IAuthService authService = new FakeAuthService(repository);
+        var result = await authService.RegisterAsync(new RegisterRequest("test@test.com", "password123"));
+        Assert.False(result.Success);
+    }
+    [Fact]
+    public async Task Login_ShouldReturnToken_WhenCredentialsAreValid()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        IAuthService authService = new FakeAuthService(repository);
+        await authService.RegisterAsync(new RegisterRequest("test@test.com", "password123"));
+        var result = await authService.LoginAsync(new LoginRequest("test@test.com", "password123"));
+        Assert.True(result.Success);
+        Assert.NotNull(result.Token);
+    }
+    [Fact]
+    public async Task ValidateToken_ShouldReturnTrue_WhenTokenIsValid()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        IAuthService authService = new FakeAuthService(repository);
+        var result = await authService.ValidateTokenAsync("fake-token");
+        Assert.True(result);
+    }
+}
+public class FakeAuthService : IAuthService
+{
+    private readonly IUserRepository _repository;
+    public FakeAuthService(IUserRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<AuthResult> RegisterAsync(RegisterRequest request)
+    {
+        var exists = await _repository.ExistsByEmailAsync(request.Email);
+        if (exists) return new AuthResult(false, null, "Email zaten kayıtlı.");
+        var user = new User(request.Email, request.Password, "user");
+        await _repository.CreateAsync(user);
+        return new AuthResult(true, null, null);
+    }
+    public async Task<AuthResult> LoginAsync(LoginRequest request)
+    {
+        var user = await _repository.GetByEmailAsync(request.Email);
+        if (user == null) return new AuthResult(false, null, "Kullanıcı bulunamadı.");
+        return new AuthResult(true, "fake-token", null);
+    }
+    public Task<bool> ValidateTokenAsync(string token)
+        => Task.FromResult(!string.IsNullOrEmpty(token));
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Tests/UserRepositoryTests.cs
+============================================================
+using AuthService.Application.Repositories;
+using AuthService.Domain.Entities;
+namespace AuthService.Tests;
+public class UserRepositoryTests
+{
+    [Fact]
+    public async Task GetByEmailAsync_ShouldReturnNull_WhenUserNotFound()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        var result = await repository.GetByEmailAsync("notfound@test.com");
+        Assert.Null(result);
+    }
+    [Fact]
+    public async Task CreateAsync_ShouldAddUser_WhenCalled()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        var user = new User("test@test.com", "hashedPassword", "user");
+        await repository.CreateAsync(user);
+        var result = await repository.GetByEmailAsync("test@test.com");
+        Assert.NotNull(result);
+    }
+    [Fact]
+    public async Task ExistsByEmailAsync_ShouldReturnTrue_WhenUserExists()
+    {
+        IUserRepository repository = new FakeUserRepository();
+        var user = new User("test@test.com", "hashedPassword", "user");
+        await repository.CreateAsync(user);
+        var result = await repository.ExistsByEmailAsync("test@test.com");
+        Assert.True(result);
+    }
+}
+public class FakeUserRepository : IUserRepository
+{
+    private readonly List<User> _users = new();
+    public Task<User?> GetByEmailAsync(string email)
+        => Task.FromResult(_users.FirstOrDefault(u => u.Email == email));
+    public Task CreateAsync(User user)
+    {
+        _users.Add(user);
+        return Task.CompletedTask;
+    }
+    public Task<bool> ExistsByEmailAsync(string email)
+        => Task.FromResult(_users.Any(u => u.Email == email));
+}
+
+============================================================
+DOSYA: services/AuthService/AuthService.Tests/UserTests.cs
+============================================================
+using AuthService.Domain.Entities;
+namespace AuthService.Tests;
+public class UserTests
+{
+    [Fact]
+    public void User_ShouldHaveEmail_WhenCreated()
+    {
+        var user = new User("test@test.com", "hashedPassword", "user");
+        Assert.Equal("test@test.com", user.Email);
+    }
+    [Fact]
+    public void User_ShouldHaveRole_WhenCreated()
+    {
+        var user = new User("test@test.com", "hashedPassword", "user");
+        Assert.Equal("user", user.Role);
+    }
+    [Fact]
+    public void User_ShouldHavePasswordHash_WhenCreated()
+    {
+        var user = new User("test@test.com", "hashedPassword", "user");
+        Assert.Equal("hashedPassword", user.PasswordHash);
+    }
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Api/Controllers/ProductsController.cs
+============================================================
+using Microsoft.AspNetCore.Mvc;
+using ProductService.Application.DTOs;
+using ProductService.Application.Services;
+using Prometheus;
+namespace ProductService.Api.Controllers;
+[ApiController]
+[Route("api/[controller]")]
+public class ProductsController : ControllerBase
+{
+    private static readonly Counter ProductsListedCounter = Metrics.CreateCounter(
+        "products_listed_total", "Ürün listeleme istekleri");
+    private static readonly Counter ProductsCreatedCounter = Metrics.CreateCounter(
+        "products_created_total", "Ürün oluşturma istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter ProductsUpdatedCounter = Metrics.CreateCounter(
+        "products_updated_total", "Ürün güncelleme istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter ProductsDeletedCounter = Metrics.CreateCounter(
+        "products_deleted_total", "Ürün silme istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private readonly IProductService _productService;
+    public ProductsController(IProductService productService)
+    {
+        _productService = productService;
+    }
+    [HttpGet]
+    public async Task<IActionResult> GetAll()
+    {
+        var products = await _productService.GetAllAsync();
+        ProductsListedCounter.Inc();
+        return Ok(products);
+    }
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetById(string id)
+    {
+        var product = await _productService.GetByIdAsync(id);
+        if (product == null) return NotFound("Ürün bulunamadı.");
+        return Ok(product);
+    }
+    [HttpGet("category/{category}")]
+    public async Task<IActionResult> GetByCategory(string category)
+    {
+        var products = await _productService.GetByCategoryAsync(category);
+        return Ok(products);
+    }
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] ProductDto dto)
+    {
+        var result = await _productService.CreateAsync(dto);
+        if (!result.Success)
+        {
+            ProductsCreatedCounter.WithLabels("failure").Inc();
+            return BadRequest(result.ErrorMessage);
+        }
+        ProductsCreatedCounter.WithLabels("success").Inc();
+        return Created("", result);
+    }
+    [HttpPut("{id}")]
+    public async Task<IActionResult> Update(string id, [FromBody] ProductDto dto)
+    {
+        var result = await _productService.UpdateAsync(id, dto);
+        if (!result.Success)
+        {
+            ProductsUpdatedCounter.WithLabels("failure").Inc();
+            return NotFound(result.ErrorMessage);
+        }
+        ProductsUpdatedCounter.WithLabels("success").Inc();
+        return Ok(result);
+    }
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(string id)
+    {
+        var result = await _productService.DeleteAsync(id);
+        if (!result)
+        {
+            ProductsDeletedCounter.WithLabels("failure").Inc();
+            return NotFound("Ürün bulunamadı.");
+        }
+        ProductsDeletedCounter.WithLabels("success").Inc();
+        return Ok("Ürün silindi.");
+    }
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Api/Program.cs
+============================================================
+using MongoDB.Driver;
+using ProductService.Application.Repositories;
+using ProductService.Application.Services;
+using ProductService.Infrastructure.Repositories;
+using ProductService.Infrastructure.Services;
+using Prometheus;
+var builder = WebApplication.CreateBuilder(args);
+var mongoClient = new MongoClient("mongodb:
+var database = mongoClient.GetDatabase("product_db");
+var productsCollection = database.GetCollection<ProductService.Domain.Entities.Product>("products");
+builder.Services.AddSingleton(productsCollection);
+builder.Services.AddScoped<IProductRepository, MongoProductRepository>();
+builder.Services.AddScoped<IProductService, ProductServiceImpl>();
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+var app = builder.Build();
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+app.UseHttpMetrics();
+app.UseAuthorization();
+app.MapControllers();
+app.MapMetrics();
+app.Run();
+
+============================================================
+DOSYA: services/ProductService/ProductService.Application/DTOs/ProductDto.cs
+============================================================
+namespace ProductService.Application.DTOs;
+public record ProductDto(string Name, decimal Price, int Stock, string Category);
+
+============================================================
+DOSYA: services/ProductService/ProductService.Application/DTOs/ServiceResult.cs
+============================================================
+namespace ProductService.Application.DTOs;
+public record ServiceResult(bool Success, string? ErrorMessage);
+
+============================================================
+DOSYA: services/ProductService/ProductService.Application/Repositories/IProductRepository.cs
+============================================================
+using ProductService.Domain.Entities;
+namespace ProductService.Application.Repositories;
+public interface IProductRepository
+{
+    Task<List<Product>> GetAllAsync();
+    Task<Product?> GetByIdAsync(string id);
+    Task<List<Product>> GetByCategoryAsync(string category);
+    Task CreateAsync(Product product);
+    Task<bool> UpdateAsync(string id, Product product);
+    Task<bool> DeleteAsync(string id);
+    Task<bool> ExistsAsync(string id);
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Application/Services/IProductService.cs
+============================================================
+using ProductService.Application.DTOs;
+using ProductService.Domain.Entities;
+namespace ProductService.Application.Services;
+public interface IProductService
+{
+    Task<List<Product>> GetAllAsync();
+    Task<Product?> GetByIdAsync(string id);
+    Task<List<Product>> GetByCategoryAsync(string category);
+    Task<ServiceResult> CreateAsync(ProductDto dto);
+    Task<ServiceResult> UpdateAsync(string id, ProductDto dto);
+    Task<bool> DeleteAsync(string id);
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Domain/Entities/Product.cs
+============================================================
+namespace ProductService.Domain.Entities;
+public class Product
+{
+    public string Id { get; private set; }
+    public string Name { get; private set; }
+    public decimal Price { get; private set; }
+    public int Stock { get; private set; }
+    public string Category { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public Product(string name, decimal price, int stock, string category)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentException.ThrowIfNullOrEmpty(category);
+        if (price < 0) throw new ArgumentException("Fiyat negatif olamaz.");
+        if (stock < 0) throw new ArgumentException("Stok negatif olamaz.");
+        Id = Guid.NewGuid().ToString();
+        Name = name;
+        Price = price;
+        Stock = stock;
+        Category = category;
+        CreatedAt = DateTime.UtcNow;
+    }
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Infrastructure/Repositories/MongoProductRepository.cs
+============================================================
+using MongoDB.Driver;
+using ProductService.Application.Repositories;
+using ProductService.Domain.Entities;
+namespace ProductService.Infrastructure.Repositories;
+public class MongoProductRepository : IProductRepository
+{
+    private readonly IMongoCollection<Product> _products;
+    public MongoProductRepository(IMongoCollection<Product> products)
+    {
+        _products = products;
+    }
+    public async Task<List<Product>> GetAllAsync()
+        => await _products.Find(_ => true).ToListAsync();
+    public async Task<Product?> GetByIdAsync(string id)
+        => await _products.Find(p => p.Id == id).FirstOrDefaultAsync();
+    public async Task<List<Product>> GetByCategoryAsync(string category)
+        => await _products.Find(p => p.Category == category).ToListAsync();
+    public async Task CreateAsync(Product product)
+        => await _products.InsertOneAsync(product);
+    public async Task<bool> UpdateAsync(string id, Product product)
+    {
+        var result = await _products.ReplaceOneAsync(p => p.Id == id, product);
+        return result.MatchedCount > 0;
+    }
+    public async Task<bool> DeleteAsync(string id)
+    {
+        var result = await _products.DeleteOneAsync(p => p.Id == id);
+        return result.DeletedCount > 0;
+    }
+    public async Task<bool> ExistsAsync(string id)
+    {
+        var count = await _products.CountDocumentsAsync(p => p.Id == id);
+        return count > 0;
+    }
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Infrastructure/Services/ProductServiceImpl.cs
+============================================================
+using ProductService.Application.DTOs;
+using ProductService.Application.Repositories;
+using ProductService.Application.Services;
+using ProductService.Domain.Entities;
+namespace ProductService.Infrastructure.Services;
+public class ProductServiceImpl : IProductService
+{
+    private readonly IProductRepository _repository;
+    public ProductServiceImpl(IProductRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Product>> GetAllAsync()
+        => await _repository.GetAllAsync();
+    public async Task<Product?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+    public async Task<List<Product>> GetByCategoryAsync(string category)
+        => await _repository.GetByCategoryAsync(category);
+    public async Task<ServiceResult> CreateAsync(ProductDto dto)
+    {
+        var product = new Product(dto.Name, dto.Price, dto.Stock, dto.Category);
+        await _repository.CreateAsync(product);
+        return new ServiceResult(true, null);
+    }
+    public async Task<ServiceResult> UpdateAsync(string id, ProductDto dto)
+    {
+        var exists = await _repository.ExistsAsync(id);
+        if (!exists) return new ServiceResult(false, "Ürün bulunamadı.");
+        var product = new Product(dto.Name, dto.Price, dto.Stock, dto.Category);
+        await _repository.UpdateAsync(id, product);
+        return new ServiceResult(true, null);
+    }
+    public async Task<bool> DeleteAsync(string id)
+        => await _repository.DeleteAsync(id);
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Tests/ProductRepositoryTests.cs
+============================================================
+using ProductService.Application.Repositories;
+using ProductService.Domain.Entities;
+namespace ProductService.Tests;
+public class ProductRepositoryTests
+{
+    [Fact]
+    public async Task GetAllAsync_ShouldReturnEmpty_WhenNoProducts()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var result = await repository.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task CreateAsync_ShouldAddProduct_WhenCalled()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        await repository.CreateAsync(product);
+        var result = await repository.GetAllAsync();
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var result = await repository.GetByIdAsync("nonexistent-id");
+        Assert.Null(result);
+    }
+    [Fact]
+    public async Task DeleteAsync_ShouldRemoveProduct_WhenExists()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        await repository.CreateAsync(product);
+        await repository.DeleteAsync(product.Id);
+        var result = await repository.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task GetByCategoryAsync_ShouldReturnProducts_WhenCategoryMatches()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        await repository.CreateAsync(product);
+        var result = await repository.GetByCategoryAsync("Elektronik");
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task ExistsAsync_ShouldReturnTrue_WhenProductExists()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        await repository.CreateAsync(product);
+        var result = await repository.ExistsAsync(product.Id);
+        Assert.True(result);
+    }
+}
+public class FakeProductRepository : IProductRepository
+{
+    private readonly List<Product> _products = new();
+    public Task<List<Product>> GetAllAsync()
+        => Task.FromResult(_products.ToList());
+    public Task<Product?> GetByIdAsync(string id)
+        => Task.FromResult(_products.FirstOrDefault(p => p.Id == id));
+    public Task<List<Product>> GetByCategoryAsync(string category)
+        => Task.FromResult(_products.Where(p => p.Category == category).ToList());
+    public Task CreateAsync(Product product)
+    {
+        _products.Add(product);
+        return Task.CompletedTask;
+    }
+    public Task<bool> UpdateAsync(string id, Product product)
+    {
+        var existing = _products.FirstOrDefault(p => p.Id == id);
+        if (existing == null) return Task.FromResult(false);
+        _products.Remove(existing);
+        _products.Add(product);
+        return Task.FromResult(true);
+    }
+    public Task<bool> DeleteAsync(string id)
+    {
+        var existing = _products.FirstOrDefault(p => p.Id == id);
+        if (existing == null) return Task.FromResult(false);
+        _products.Remove(existing);
+        return Task.FromResult(true);
+    }
+    public Task<bool> ExistsAsync(string id)
+        => Task.FromResult(_products.Any(p => p.Id == id));
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Tests/ProductServiceTests.cs
+============================================================
+using ProductService.Application.Repositories;
+using ProductService.Application.Services;
+using ProductService.Application.DTOs;
+using ProductService.Domain.Entities;
+namespace ProductService.Tests;
+public class ProductServiceTests
+{
+    [Fact]
+    public async Task GetAllProducts_ShouldReturnEmpty_WhenNoProducts()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        IProductService service = new FakeProductService(repository);
+        var result = await service.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task CreateProduct_ShouldReturnSuccess_WhenValid()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        IProductService service = new FakeProductService(repository);
+        var result = await service.CreateAsync(new ProductDto("Laptop", 15000, 50, "Elektronik"));
+        Assert.True(result.Success);
+    }
+    [Fact]
+    public async Task DeleteProduct_ShouldReturnFalse_WhenNotFound()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        IProductService service = new FakeProductService(repository);
+        var result = await service.DeleteAsync("nonexistent-id");
+        Assert.False(result);
+    }
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        IProductService service = new FakeProductService(repository);
+        var result = await service.GetByIdAsync("nonexistent-id");
+        Assert.Null(result);
+    }
+    [Fact]
+    public async Task GetByCategoryAsync_ShouldReturnProducts_WhenCategoryMatches()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        IProductService service = new FakeProductService(repository);
+        await service.CreateAsync(new ProductDto("Laptop", 15000, 50, "Elektronik"));
+        var result = await service.GetByCategoryAsync("Elektronik");
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task UpdateProduct_ShouldReturnSuccess_WhenProductExists()
+    {
+        IProductRepository repository = new FakeProductRepository();
+        IProductService service = new FakeProductService(repository);
+        await service.CreateAsync(new ProductDto("Laptop", 15000, 50, "Elektronik"));
+        var products = await service.GetAllAsync();
+        var result = await service.UpdateAsync(products[0].Id, new ProductDto("Laptop Pro", 20000, 30, "Elektronik"));
+        Assert.True(result.Success);
+    }
+}
+public class FakeProductService : IProductService
+{
+    private readonly IProductRepository _repository;
+    public FakeProductService(IProductRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Product>> GetAllAsync()
+        => await _repository.GetAllAsync();
+    public async Task<Product?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+    public async Task<List<Product>> GetByCategoryAsync(string category)
+        => await _repository.GetByCategoryAsync(category);
+    public async Task<ServiceResult> CreateAsync(ProductDto dto)
+    {
+        var product = new Product(dto.Name, dto.Price, dto.Stock, dto.Category);
+        await _repository.CreateAsync(product);
+        return new ServiceResult(true, null);
+    }
+    public async Task<ServiceResult> UpdateAsync(string id, ProductDto dto)
+    {
+        var product = new Product(dto.Name, dto.Price, dto.Stock, dto.Category);
+        var result = await _repository.UpdateAsync(id, product);
+        return new ServiceResult(result, result ? null : "Ürün bulunamadı.");
+    }
+    public async Task<bool> DeleteAsync(string id)
+        => await _repository.DeleteAsync(id);
+}
+
+============================================================
+DOSYA: services/ProductService/ProductService.Tests/ProductTests.cs
+============================================================
+using ProductService.Domain.Entities;
+namespace ProductService.Tests;
+public class ProductTests
+{
+    [Fact]
+    public void Product_ShouldHaveName_WhenCreated()
+    {
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        Assert.Equal("Laptop", product.Name);
+    }
+    [Fact]
+    public void Product_ShouldHavePrice_WhenCreated()
+    {
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        Assert.Equal(15000, product.Price);
+    }
+    [Fact]
+    public void Product_ShouldHaveStock_WhenCreated()
+    {
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        Assert.Equal(50, product.Stock);
+    }
+    [Fact]
+    public void Product_ShouldHaveCategory_WhenCreated()
+    {
+        var product = new Product("Laptop", 15000, 50, "Elektronik");
+        Assert.Equal("Elektronik", product.Category);
+    }
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Api/Controllers/OrdersController.cs
+============================================================
+using Microsoft.AspNetCore.Mvc;
+using OrderService.Application.DTOs;
+using OrderService.Application.Services;
+using Prometheus;
+namespace OrderService.Api.Controllers;
+[ApiController]
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase
+{
+    private static readonly Counter OrdersCreatedCounter = Metrics.CreateCounter(
+        "orders_created_total", "Sipariş oluşturma istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter OrdersStatusUpdatedCounter = Metrics.CreateCounter(
+        "orders_status_updated_total", "Sipariş durum güncellemeleri", new CounterConfiguration { LabelNames = new[] { "status" } });
+    private static readonly Counter OrdersDeletedCounter = Metrics.CreateCounter(
+        "orders_deleted_total", "Sipariş silme istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private readonly IOrderService _orderService;
+    public OrdersController(IOrderService orderService)
+    {
+        _orderService = orderService;
+    }
+    [HttpGet]
+    public async Task<IActionResult> GetAll()
+    {
+        var orders = await _orderService.GetAllAsync();
+        return Ok(orders);
+    }
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetById(string id)
+    {
+        var order = await _orderService.GetByIdAsync(id);
+        if (order == null) return NotFound("Sipariş bulunamadı.");
+        return Ok(order);
+    }
+    [HttpGet("customer/{email}")]
+    public async Task<IActionResult> GetByCustomerEmail(string email)
+    {
+        var orders = await _orderService.GetByCustomerEmailAsync(email);
+        return Ok(orders);
+    }
+    [HttpGet("status/{status}")]
+    public async Task<IActionResult> GetByStatus(string status)
+    {
+        var orders = await _orderService.GetByStatusAsync(status);
+        return Ok(orders);
+    }
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] OrderDto dto)
+    {
+        var result = await _orderService.CreateAsync(dto);
+        if (!result.Success)
+        {
+            OrdersCreatedCounter.WithLabels("failure").Inc();
+            return BadRequest(result.ErrorMessage);
+        }
+        OrdersCreatedCounter.WithLabels("success").Inc();
+        return Created("", result);
+    }
+    [HttpPut("{id}/status")]
+    public async Task<IActionResult> UpdateStatus(string id, [FromBody] string status)
+    {
+        var result = await _orderService.UpdateStatusAsync(id, status);
+        if (!result) return NotFound("Sipariş bulunamadı.");
+        OrdersStatusUpdatedCounter.WithLabels(status).Inc();
+        return Ok("Sipariş güncellendi.");
+    }
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(string id)
+    {
+        var result = await _orderService.DeleteAsync(id);
+        if (!result)
+        {
+            OrdersDeletedCounter.WithLabels("failure").Inc();
+            return NotFound("Sipariş bulunamadı.");
+        }
+        OrdersDeletedCounter.WithLabels("success").Inc();
+        return Ok("Sipariş silindi.");
+    }
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Api/Program.cs
+============================================================
+using MongoDB.Driver;
+using OrderService.Application.Repositories;
+using OrderService.Application.Services;
+using OrderService.Infrastructure.Repositories;
+using OrderService.Infrastructure.Services;
+using Prometheus;
+var builder = WebApplication.CreateBuilder(args);
+var mongoClient = new MongoClient("mongodb:
+var database = mongoClient.GetDatabase("order_db");
+var ordersCollection = database.GetCollection<OrderService.Domain.Entities.Order>("orders");
+builder.Services.AddSingleton(ordersCollection);
+builder.Services.AddScoped<IOrderRepository, MongoOrderRepository>();
+builder.Services.AddScoped<IOrderService, OrderServiceImpl>();
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+var app = builder.Build();
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+app.UseHttpMetrics();
+app.UseAuthorization();
+app.MapControllers();
+app.MapMetrics();
+app.Run();
+
+============================================================
+DOSYA: services/OrderService/OrderService.Application/DTOs/OrderDto.cs
+============================================================
+namespace OrderService.Application.DTOs;
+public record OrderDto(string ProductId, int Quantity, string CustomerEmail);
+
+============================================================
+DOSYA: services/OrderService/OrderService.Application/DTOs/OrderResult.cs
+============================================================
+namespace OrderService.Application.DTOs;
+public record OrderResult(bool Success, string? ErrorMessage, string? OrderId = null);
+
+============================================================
+DOSYA: services/OrderService/OrderService.Application/Repositories/IOrderRepository.cs
+============================================================
+using OrderService.Domain.Entities;
+namespace OrderService.Application.Repositories;
+public interface IOrderRepository
+{
+    Task<List<Order>> GetAllAsync();
+    Task<Order?> GetByIdAsync(string id);
+    Task<List<Order>> GetByCustomerEmailAsync(string email);
+    Task<List<Order>> GetByStatusAsync(string status);
+    Task CreateAsync(Order order);
+    Task<bool> UpdateStatusAsync(string id, string status);
+    Task<bool> DeleteAsync(string id);
+    Task<bool> ExistsAsync(string id);
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Application/Services/IOrderService.cs
+============================================================
+using OrderService.Application.DTOs;
+using OrderService.Domain.Entities;
+namespace OrderService.Application.Services;
+public interface IOrderService
+{
+    Task<List<Order>> GetAllAsync();
+    Task<Order?> GetByIdAsync(string id);
+    Task<List<Order>> GetByCustomerEmailAsync(string email);
+    Task<List<Order>> GetByStatusAsync(string status);
+    Task<OrderResult> CreateAsync(OrderDto dto);
+    Task<bool> UpdateStatusAsync(string id, string status);
+    Task<bool> DeleteAsync(string id);
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Domain/Entities/Order.cs
+============================================================
+namespace OrderService.Domain.Entities;
+public class Order
+{
+    public string Id { get; private set; }
+    public string ProductId { get; private set; }
+    public int Quantity { get; private set; }
+    public string CustomerEmail { get; private set; }
+    public string Status { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public DateTime? UpdatedAt { get; private set; }
+    public Order(string productId, int quantity, string customerEmail)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(productId);
+        ArgumentException.ThrowIfNullOrEmpty(customerEmail);
+        if (quantity <= 0) throw new ArgumentException("Miktar sıfırdan büyük olmalıdır.");
+        Id = Guid.NewGuid().ToString();
+        ProductId = productId;
+        Quantity = quantity;
+        CustomerEmail = customerEmail;
+        Status = "Beklemede";
+        CreatedAt = DateTime.UtcNow;
+    }
+    public void UpdateStatus(string status)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(status);
+        Status = status;
+        UpdatedAt = DateTime.UtcNow;
+    }
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Infrastructure/Repositories/MongoOrderRepository.cs
+============================================================
+using MongoDB.Driver;
+using OrderService.Application.Repositories;
+using OrderService.Domain.Entities;
+namespace OrderService.Infrastructure.Repositories;
+public class MongoOrderRepository : IOrderRepository
+{
+    private readonly IMongoCollection<Order> _orders;
+    public MongoOrderRepository(IMongoCollection<Order> orders)
+    {
+        _orders = orders;
+    }
+    public async Task<List<Order>> GetAllAsync()
+        => await _orders.Find(_ => true).ToListAsync();
+    public async Task<Order?> GetByIdAsync(string id)
+        => await _orders.Find(o => o.Id == id).FirstOrDefaultAsync();
+    public async Task<List<Order>> GetByCustomerEmailAsync(string email)
+        => await _orders.Find(o => o.CustomerEmail == email).ToListAsync();
+    public async Task<List<Order>> GetByStatusAsync(string status)
+        => await _orders.Find(o => o.Status == status).ToListAsync();
+    public async Task CreateAsync(Order order)
+        => await _orders.InsertOneAsync(order);
+    public async Task<bool> UpdateStatusAsync(string id, string status)
+    {
+        var order = await GetByIdAsync(id);
+        if (order == null) return false;
+        order.UpdateStatus(status);
+        var result = await _orders.ReplaceOneAsync(o => o.Id == id, order);
+        return result.MatchedCount > 0;
+    }
+    public async Task<bool> DeleteAsync(string id)
+    {
+        var result = await _orders.DeleteOneAsync(o => o.Id == id);
+        return result.DeletedCount > 0;
+    }
+    public async Task<bool> ExistsAsync(string id)
+    {
+        var count = await _orders.CountDocumentsAsync(o => o.Id == id);
+        return count > 0;
+    }
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Infrastructure/Services/OrderServiceImpl.cs
+============================================================
+using OrderService.Application.DTOs;
+using OrderService.Application.Repositories;
+using OrderService.Application.Services;
+using OrderService.Domain.Entities;
+namespace OrderService.Infrastructure.Services;
+public class OrderServiceImpl : IOrderService
+{
+    private readonly IOrderRepository _repository;
+    public OrderServiceImpl(IOrderRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Order>> GetAllAsync()
+        => await _repository.GetAllAsync();
+    public async Task<Order?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+    public async Task<List<Order>> GetByCustomerEmailAsync(string email)
+        => await _repository.GetByCustomerEmailAsync(email);
+    public async Task<List<Order>> GetByStatusAsync(string status)
+        => await _repository.GetByStatusAsync(status);
+    public async Task<OrderResult> CreateAsync(OrderDto dto)
+    {
+        var order = new Order(dto.ProductId, dto.Quantity, dto.CustomerEmail);
+        await _repository.CreateAsync(order);
+        return new OrderResult(true, null, order.Id);
+    }
+    public async Task<bool> UpdateStatusAsync(string id, string status)
+        => await _repository.UpdateStatusAsync(id, status);
+    public async Task<bool> DeleteAsync(string id)
+        => await _repository.DeleteAsync(id);
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Tests/OrderRepositoryTests.cs
+============================================================
+using OrderService.Application.Repositories;
+using OrderService.Domain.Entities;
+namespace OrderService.Tests;
+public class OrderRepositoryTests
+{
+    [Fact]
+    public async Task GetAllAsync_ShouldReturnEmpty_WhenNoOrders()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var result = await repository.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task CreateAsync_ShouldAddOrder_WhenCalled()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var order = new Order("product-1", 2, "test@test.com");
+        await repository.CreateAsync(order);
+        var result = await repository.GetAllAsync();
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var result = await repository.GetByIdAsync("nonexistent-id");
+        Assert.Null(result);
+    }
+    [Fact]
+    public async Task GetByCustomerEmailAsync_ShouldReturnOrders_WhenExists()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var order = new Order("product-1", 2, "test@test.com");
+        await repository.CreateAsync(order);
+        var result = await repository.GetByCustomerEmailAsync("test@test.com");
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetByStatusAsync_ShouldReturnOrders_WhenStatusMatches()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var order = new Order("product-1", 2, "test@test.com");
+        await repository.CreateAsync(order);
+        var result = await repository.GetByStatusAsync("Beklemede");
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task ExistsAsync_ShouldReturnTrue_WhenOrderExists()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        var order = new Order("product-1", 2, "test@test.com");
+        await repository.CreateAsync(order);
+        var result = await repository.ExistsAsync(order.Id);
+        Assert.True(result);
+    }
+}
+public class FakeOrderRepository : IOrderRepository
+{
+    private readonly List<Order> _orders = new();
+    public Task<List<Order>> GetAllAsync()
+        => Task.FromResult(_orders.ToList());
+    public Task<Order?> GetByIdAsync(string id)
+        => Task.FromResult(_orders.FirstOrDefault(o => o.Id == id));
+    public Task<List<Order>> GetByCustomerEmailAsync(string email)
+        => Task.FromResult(_orders.Where(o => o.CustomerEmail == email).ToList());
+    public Task<List<Order>> GetByStatusAsync(string status)
+        => Task.FromResult(_orders.Where(o => o.Status == status).ToList());
+    public Task CreateAsync(Order order)
+    {
+        _orders.Add(order);
+        return Task.CompletedTask;
+    }
+    public Task<bool> UpdateStatusAsync(string id, string status)
+    {
+        var order = _orders.FirstOrDefault(o => o.Id == id);
+        if (order == null) return Task.FromResult(false);
+        order.UpdateStatus(status);
+        return Task.FromResult(true);
+    }
+    public Task<bool> DeleteAsync(string id)
+    {
+        var order = _orders.FirstOrDefault(o => o.Id == id);
+        if (order == null) return Task.FromResult(false);
+        _orders.Remove(order);
+        return Task.FromResult(true);
+    }
+    public Task<bool> ExistsAsync(string id)
+        => Task.FromResult(_orders.Any(o => o.Id == id));
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Tests/OrderServiceTests.cs
+============================================================
+using OrderService.Application.Repositories;
+using OrderService.Application.Services;
+using OrderService.Application.DTOs;
+using OrderService.Domain.Entities;
+namespace OrderService.Tests;
+public class OrderServiceTests
+{
+    [Fact]
+    public async Task CreateOrder_ShouldReturnSuccess_WhenValid()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        var result = await service.CreateAsync(new OrderDto("product-1", 2, "test@test.com"));
+        Assert.True(result.Success);
+    }
+    [Fact]
+    public async Task GetAllOrders_ShouldReturnEmpty_WhenNoOrders()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        var result = await service.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task UpdateStatus_ShouldReturnFalse_WhenOrderNotFound()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        var result = await service.UpdateStatusAsync("nonexistent-id", "Tamamlandı");
+        Assert.False(result);
+    }
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        var result = await service.GetByIdAsync("nonexistent-id");
+        Assert.Null(result);
+    }
+    [Fact]
+    public async Task GetByCustomerEmailAsync_ShouldReturnOrders_WhenExists()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        await service.CreateAsync(new OrderDto("product-1", 2, "test@test.com"));
+        var result = await service.GetByCustomerEmailAsync("test@test.com");
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetByStatusAsync_ShouldReturnOrders_WhenStatusMatches()
+    {
+        IOrderRepository repository = new FakeOrderRepository();
+        IOrderService service = new FakeOrderService(repository);
+        await service.CreateAsync(new OrderDto("product-1", 2, "test@test.com"));
+        var result = await service.GetByStatusAsync("Beklemede");
+        Assert.Single(result);
+    }
+}
+public class FakeOrderService : IOrderService
+{
+    private readonly IOrderRepository _repository;
+    public FakeOrderService(IOrderRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Order>> GetAllAsync()
+        => await _repository.GetAllAsync();
+    public async Task<Order?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+    public async Task<List<Order>> GetByCustomerEmailAsync(string email)
+        => await _repository.GetByCustomerEmailAsync(email);
+    public async Task<List<Order>> GetByStatusAsync(string status)
+        => await _repository.GetByStatusAsync(status);
+    public async Task<OrderResult> CreateAsync(OrderDto dto)
+    {
+        var order = new Order(dto.ProductId, dto.Quantity, dto.CustomerEmail);
+        await _repository.CreateAsync(order);
+        return new OrderResult(true, null);
+    }
+    public async Task<bool> UpdateStatusAsync(string id, string status)
+        => await _repository.UpdateStatusAsync(id, status);
+    public async Task<bool> DeleteAsync(string id)
+        => await _repository.DeleteAsync(id);
+}
+
+============================================================
+DOSYA: services/OrderService/OrderService.Tests/OrderTests.cs
+============================================================
+using OrderService.Domain.Entities;
+namespace OrderService.Tests;
+public class OrderTests
+{
+    [Fact]
+    public void Order_ShouldHaveProductId_WhenCreated()
+    {
+        var order = new Order("product-1", 2, "test@test.com");
+        Assert.Equal("product-1", order.ProductId);
+    }
+    [Fact]
+    public void Order_ShouldHaveQuantity_WhenCreated()
+    {
+        var order = new Order("product-1", 2, "test@test.com");
+        Assert.Equal(2, order.Quantity);
+    }
+    [Fact]
+    public void Order_ShouldHaveDefaultStatus_WhenCreated()
+    {
+        var order = new Order("product-1", 2, "test@test.com");
+        Assert.Equal("Beklemede", order.Status);
+    }
+    [Fact]
+    public void Order_ShouldHaveCustomerEmail_WhenCreated()
+    {
+        var order = new Order("product-1", 2, "test@test.com");
+        Assert.Equal("test@test.com", order.CustomerEmail);
+    }
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Api/Controlllers/PaymentsController.cs
+============================================================
+using Microsoft.AspNetCore.Mvc;
+using PaymentService.Application.DTOs;
+using PaymentService.Application.Services;
+using Prometheus;
+namespace PaymentService.Api.Controllers;
+[ApiController]
+[Route("api/[controller]")]
+public class PaymentsController : ControllerBase
+{
+    private static readonly Counter PaymentsCreatedCounter = Metrics.CreateCounter(
+        "payments_created_total", "Ödeme oluşturma istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter PaymentsCompletedCounter = Metrics.CreateCounter(
+        "payments_completed_total", "Tamamlanan ödemeler");
+    private static readonly Counter PaymentsFailedCounter = Metrics.CreateCounter(
+        "payments_failed_total", "Başarısız ödemeler");
+    private readonly IPaymentService _paymentService;
+    public PaymentsController(IPaymentService paymentService)
+    {
+        _paymentService = paymentService;
+    }
+    [HttpGet]
+    public async Task<IActionResult> GetAll()
+    {
+        var payments = await _paymentService.GetAllAsync();
+        return Ok(payments);
+    }
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetById(string id)
+    {
+        var payment = await _paymentService.GetByIdAsync(id);
+        if (payment == null) return NotFound("Ödeme bulunamadı.");
+        return Ok(payment);
+    }
+    [HttpGet("order/{orderId}")]
+    public async Task<IActionResult> GetByOrderId(string orderId)
+    {
+        var payment = await _paymentService.GetByOrderIdAsync(orderId);
+        if (payment == null) return NotFound("Sipariş için ödeme bulunamadı.");
+        return Ok(payment);
+    }
+    [HttpGet("status/{status}")]
+    public async Task<IActionResult> GetByStatus(string status)
+    {
+        var payments = await _paymentService.GetByStatusAsync(status);
+        return Ok(payments);
+    }
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] PaymentDto dto)
+    {
+        var result = await _paymentService.CreateAsync(dto);
+        if (!result.Success)
+        {
+            PaymentsCreatedCounter.WithLabels("failure").Inc();
+            return BadRequest(result.ErrorMessage);
+        }
+        PaymentsCreatedCounter.WithLabels("success").Inc();
+        return Created("", result);
+    }
+    [HttpPut("{id}/complete")]
+    public async Task<IActionResult> Complete(string id)
+    {
+        var result = await _paymentService.CompleteAsync(id);
+        if (!result) return NotFound("Ödeme bulunamadı.");
+        PaymentsCompletedCounter.Inc();
+        return Ok("Ödeme tamamlandı.");
+    }
+    [HttpPut("{id}/fail")]
+    public async Task<IActionResult> Fail(string id)
+    {
+        var result = await _paymentService.FailAsync(id);
+        if (!result) return NotFound("Ödeme bulunamadı.");
+        PaymentsFailedCounter.Inc();
+        return Ok("Ödeme başarısız olarak işaretlendi.");
+    }
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Api/Program.cs
+============================================================
+using MongoDB.Driver;
+using PaymentService.Application.Repositories;
+using PaymentService.Application.Services;
+using PaymentService.Infrastructure.Repositories;
+using PaymentService.Infrastructure.Services;
+using Prometheus;
+var builder = WebApplication.CreateBuilder(args);
+var mongoClient = new MongoClient("mongodb:
+var database = mongoClient.GetDatabase("payment_db");
+var paymentsCollection = database.GetCollection<PaymentService.Domain.Entities.Payment>("payments");
+builder.Services.AddSingleton(paymentsCollection);
+builder.Services.AddScoped<IPaymentRepository, MongoPaymentRepository>();
+builder.Services.AddScoped<IPaymentService, PaymentServiceImpl>();
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+var app = builder.Build();
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+app.UseHttpMetrics();
+app.UseAuthorization();
+app.MapControllers();
+app.MapMetrics();
+app.Run();
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Application/DTOs/PaymentDto.cs
+============================================================
+namespace PaymentService.Application.DTOs;
+public record PaymentDto(string OrderId, decimal Amount, string PaymentMethod);
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Application/DTOs/PaymentResult.cs
+============================================================
+namespace PaymentService.Application.DTOs;
+public record PaymentResult(bool Success, string? ErrorMessage);
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Application/Repositories/IPaymentRepository.cs
+============================================================
+using PaymentService.Domain.Entities;
+namespace PaymentService.Application.Repositories;
+public interface IPaymentRepository
+{
+    Task<List<Payment>> GetAllAsync();
+    Task<Payment?> GetByIdAsync(string id);
+    Task<Payment?> GetByOrderIdAsync(string orderId);
+    Task<List<Payment>> GetByStatusAsync(string status);
+    Task CreateAsync(Payment payment);
+    Task<bool> UpdateAsync(Payment payment);
+    Task<bool> DeleteAsync(string id);
+    Task<bool> ExistsAsync(string id);
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Application/Services/IPaymentService.cs
+============================================================
+using PaymentService.Application.DTOs;
+using PaymentService.Domain.Entities;
+namespace PaymentService.Application.Services;
+public interface IPaymentService
+{
+    Task<List<Payment>> GetAllAsync();
+    Task<Payment?> GetByIdAsync(string id);
+    Task<Payment?> GetByOrderIdAsync(string orderId);
+    Task<List<Payment>> GetByStatusAsync(string status);
+    Task<PaymentResult> CreateAsync(PaymentDto dto);
+    Task<bool> CompleteAsync(string id);
+    Task<bool> FailAsync(string id);
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Domain/Payment.cs
+============================================================
+namespace PaymentService.Domain.Entities;
+public class Payment
+{
+    public string Id { get; private set; }
+    public string OrderId { get; private set; }
+    public decimal Amount { get; private set; }
+    public string PaymentMethod { get; private set; }
+    public string Status { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public DateTime? CompletedAt { get; private set; }
+    public Payment(string orderId, decimal amount, string paymentMethod)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(orderId);
+        ArgumentException.ThrowIfNullOrEmpty(paymentMethod);
+        if (amount <= 0) throw new ArgumentException("Tutar sıfırdan büyük olmalıdır.");
+        Id = Guid.NewGuid().ToString();
+        OrderId = orderId;
+        Amount = amount;
+        PaymentMethod = paymentMethod;
+        Status = "Pending";
+        CreatedAt = DateTime.UtcNow;
+    }
+    public void Complete()
+    {
+        Status = "Completed";
+        CompletedAt = DateTime.UtcNow;
+    }
+    public void Fail()
+    {
+        Status = "Failed";
+    }
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Infrastructure/Repositories/MongoPaymentRepository.cs
+============================================================
+using MongoDB.Driver;
+using PaymentService.Application.Repositories;
+using PaymentService.Domain.Entities;
+namespace PaymentService.Infrastructure.Repositories;
+public class MongoPaymentRepository : IPaymentRepository
+{
+    private readonly IMongoCollection<Payment> _payments;
+    public MongoPaymentRepository(IMongoCollection<Payment> payments)
+    {
+        _payments = payments;
+    }
+    public async Task<List<Payment>> GetAllAsync()
+        => await _payments.Find(_ => true).SortByDescending(p => p.CreatedAt).ToListAsync();
+    public async Task<Payment?> GetByIdAsync(string id)
+        => await _payments.Find(p => p.Id == id).FirstOrDefaultAsync();
+    public async Task<Payment?> GetByOrderIdAsync(string orderId)
+        => await _payments.Find(p => p.OrderId == orderId).FirstOrDefaultAsync();
+    public async Task<List<Payment>> GetByStatusAsync(string status)
+        => await _payments.Find(p => p.Status == status).ToListAsync();
+    public async Task CreateAsync(Payment payment)
+        => await _payments.InsertOneAsync(payment);
+    public async Task<bool> UpdateAsync(Payment payment)
+    {
+        var result = await _payments.ReplaceOneAsync(p => p.Id == payment.Id, payment);
+        return result.MatchedCount > 0;
+    }
+    public async Task<bool> DeleteAsync(string id)
+    {
+        var result = await _payments.DeleteOneAsync(p => p.Id == id);
+        return result.DeletedCount > 0;
+    }
+    public async Task<bool> ExistsAsync(string id)
+    {
+        var count = await _payments.CountDocumentsAsync(p => p.Id == id);
+        return count > 0;
+    }
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Infrastructure/Services/PaymentServiceImpl.cs
+============================================================
+using PaymentService.Application.DTOs;
+using PaymentService.Application.Repositories;
+using PaymentService.Application.Services;
+using PaymentService.Domain.Entities;
+namespace PaymentService.Infrastructure.Services;
+public class PaymentServiceImpl : IPaymentService
+{
+    private readonly IPaymentRepository _repository;
+    public PaymentServiceImpl(IPaymentRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Payment>> GetAllAsync()
+        => await _repository.GetAllAsync();
+    public async Task<Payment?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+    public async Task<Payment?> GetByOrderIdAsync(string orderId)
+        => await _repository.GetByOrderIdAsync(orderId);
+    public async Task<List<Payment>> GetByStatusAsync(string status)
+        => await _repository.GetByStatusAsync(status);
+    public async Task<PaymentResult> CreateAsync(PaymentDto dto)
+    {
+        var payment = new Payment(dto.OrderId, dto.Amount, dto.PaymentMethod);
+        await _repository.CreateAsync(payment);
+        return new PaymentResult(true, null);
+    }
+    public async Task<bool> CompleteAsync(string id)
+    {
+        var payment = await _repository.GetByIdAsync(id);
+        if (payment == null) return false;
+        payment.Complete();
+        return await _repository.UpdateAsync(payment);
+    }
+    public async Task<bool> FailAsync(string id)
+    {
+        var payment = await _repository.GetByIdAsync(id);
+        if (payment == null) return false;
+        payment.Fail();
+        return await _repository.UpdateAsync(payment);
+    }
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Tests/PaymentRepositoryTests.cs
+============================================================
+using PaymentService.Application.Repositories;
+using PaymentService.Domain.Entities;
+namespace PaymentService.Tests;
+public class PaymentRepositoryTests
+{
+    [Fact]
+    public async Task GetAllAsync_ShouldReturnEmpty_WhenNoPayments()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var result = await repository.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task CreateAsync_ShouldAddPayment_WhenCalled()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        await repository.CreateAsync(payment);
+        var result = await repository.GetAllAsync();
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetByOrderIdAsync_ShouldReturnPayment_WhenExists()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        await repository.CreateAsync(payment);
+        var result = await repository.GetByOrderIdAsync("order-1");
+        Assert.NotNull(result);
+    }
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var result = await repository.GetByIdAsync("nonexistent-id");
+        Assert.Null(result);
+    }
+    [Fact]
+    public async Task GetByStatusAsync_ShouldReturnPayments_WhenStatusMatches()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        await repository.CreateAsync(payment);
+        var result = await repository.GetByStatusAsync("Pending");
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task ExistsAsync_ShouldReturnTrue_WhenPaymentExists()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        await repository.CreateAsync(payment);
+        var result = await repository.ExistsAsync(payment.Id);
+        Assert.True(result);
+    }
+}
+public class FakePaymentRepository : IPaymentRepository
+{
+    private readonly List<Payment> _payments = new();
+    public Task<List<Payment>> GetAllAsync()
+        => Task.FromResult(_payments.ToList());
+    public Task<Payment?> GetByIdAsync(string id)
+        => Task.FromResult(_payments.FirstOrDefault(p => p.Id == id));
+    public Task<Payment?> GetByOrderIdAsync(string orderId)
+        => Task.FromResult(_payments.FirstOrDefault(p => p.OrderId == orderId));
+    public Task<List<Payment>> GetByStatusAsync(string status)
+        => Task.FromResult(_payments.Where(p => p.Status == status).ToList());
+    public Task CreateAsync(Payment payment)
+    {
+        _payments.Add(payment);
+        return Task.CompletedTask;
+    }
+    public Task<bool> UpdateAsync(Payment payment)
+    {
+        var existing = _payments.FirstOrDefault(p => p.Id == payment.Id);
+        if (existing == null) return Task.FromResult(false);
+        _payments.Remove(existing);
+        _payments.Add(payment);
+        return Task.FromResult(true);
+    }
+    public Task<bool> DeleteAsync(string id)
+    {
+        var existing = _payments.FirstOrDefault(p => p.Id == id);
+        if (existing == null) return Task.FromResult(false);
+        _payments.Remove(existing);
+        return Task.FromResult(true);
+    }
+    public Task<bool> ExistsAsync(string id)
+        => Task.FromResult(_payments.Any(p => p.Id == id));
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Tests/PaymentServiceTests.cs
+============================================================
+using PaymentService.Application.Repositories;
+using PaymentService.Application.Services;
+using PaymentService.Application.DTOs;
+using PaymentService.Domain.Entities;
+namespace PaymentService.Tests;
+public class PaymentServiceTests
+{
+    [Fact]
+    public async Task CreatePayment_ShouldReturnSuccess_WhenValid()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        IPaymentService service = new FakePaymentService(repository);
+        var result = await service.CreateAsync(new PaymentDto("order-1", 150.00m, "CreditCard"));
+        Assert.True(result.Success);
+    }
+    [Fact]
+    public async Task GetAllPayments_ShouldReturnEmpty_WhenNoPayments()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        IPaymentService service = new FakePaymentService(repository);
+        var result = await service.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task CompletePayment_ShouldReturnFalse_WhenNotFound()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        IPaymentService service = new FakePaymentService(repository);
+        var result = await service.CompleteAsync("nonexistent-id");
+        Assert.False(result);
+    }
+    [Fact]
+    public async Task GetByOrderId_ShouldReturnPayment_WhenExists()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        IPaymentService service = new FakePaymentService(repository);
+        await service.CreateAsync(new PaymentDto("order-1", 150.00m, "CreditCard"));
+        var result = await service.GetByOrderIdAsync("order-1");
+        Assert.NotNull(result);
+    }
+    [Fact]
+    public async Task GetByStatus_ShouldReturnPayments_WhenStatusMatches()
+    {
+        IPaymentRepository repository = new FakePaymentRepository();
+        IPaymentService service = new FakePaymentService(repository);
+        await service.CreateAsync(new PaymentDto("order-1", 150.00m, "CreditCard"));
+        var result = await service.GetByStatusAsync("Pending");
+        Assert.Single(result);
+    }
+}
+public class FakePaymentService : IPaymentService
+{
+    private readonly IPaymentRepository _repository;
+    public FakePaymentService(IPaymentRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Payment>> GetAllAsync()
+        => await _repository.GetAllAsync();
+    public async Task<Payment?> GetByIdAsync(string id)
+        => await _repository.GetByIdAsync(id);
+    public async Task<Payment?> GetByOrderIdAsync(string orderId)
+        => await _repository.GetByOrderIdAsync(orderId);
+    public async Task<List<Payment>> GetByStatusAsync(string status)
+        => await _repository.GetByStatusAsync(status);
+    public async Task<PaymentResult> CreateAsync(PaymentDto dto)
+    {
+        var payment = new Payment(dto.OrderId, dto.Amount, dto.PaymentMethod);
+        await _repository.CreateAsync(payment);
+        return new PaymentResult(true, null);
+    }
+    public async Task<bool> CompleteAsync(string id)
+    {
+        var payment = await _repository.GetByIdAsync(id);
+        if (payment == null) return false;
+        payment.Complete();
+        return await _repository.UpdateAsync(payment);
+    }
+    public async Task<bool> FailAsync(string id)
+    {
+        var payment = await _repository.GetByIdAsync(id);
+        if (payment == null) return false;
+        payment.Fail();
+        return await _repository.UpdateAsync(payment);
+    }
+}
+
+============================================================
+DOSYA: services/PaymentService/PaymentService.Tests/PaymentTests.cs
+============================================================
+using PaymentService.Domain.Entities;
+namespace PaymentService.Tests;
+public class PaymentTests
+{
+    [Fact]
+    public void Payment_ShouldHaveOrderId_WhenCreated()
+    {
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        Assert.Equal("order-1", payment.OrderId);
+    }
+    [Fact]
+    public void Payment_ShouldHaveAmount_WhenCreated()
+    {
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        Assert.Equal(150.00m, payment.Amount);
+    }
+    [Fact]
+    public void Payment_ShouldHavePendingStatus_WhenCreated()
+    {
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        Assert.Equal("Pending", payment.Status);
+    }
+    [Fact]
+    public void Payment_ShouldHavePaymentMethod_WhenCreated()
+    {
+        var payment = new Payment("order-1", 150.00m, "CreditCard");
+        Assert.Equal("CreditCard", payment.PaymentMethod);
+    }
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Api/Controllers/NotificationsController.cs
+============================================================
+using Microsoft.AspNetCore.Mvc;
+using NotificationService.Application.DTOs;
+using NotificationService.Application.Services;
+using Prometheus;
+namespace NotificationService.Api.Controllers;
+[ApiController]
+[Route("api/[controller]")]
+public class NotificationsController : ControllerBase
+{
+    private static readonly Counter NotificationsCreatedCounter = Metrics.CreateCounter(
+        "notifications_created_total", "Bildirim oluşturma istekleri", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private static readonly Counter NotificationsReadCounter = Metrics.CreateCounter(
+        "notifications_marked_read_total", "Okundu olarak işaretlenen bildirimler");
+    private static readonly Counter NotificationsDeletedCounter = Metrics.CreateCounter(
+        "notifications_deleted_total", "Silinen bildirimler", new CounterConfiguration { LabelNames = new[] { "result" } });
+    private readonly INotificationService _notificationService;
+    public NotificationsController(INotificationService notificationService)
+    {
+        _notificationService = notificationService;
+    }
+    [HttpGet]
+    public async Task<IActionResult> GetAll()
+    {
+        var notifications = await _notificationService.GetAllAsync();
+        return Ok(notifications);
+    }
+    [HttpGet("user/{userId}")]
+    public async Task<IActionResult> GetByUserId(string userId)
+    {
+        var notifications = await _notificationService.GetByUserIdAsync(userId);
+        return Ok(notifications);
+    }
+    [HttpGet("user/{userId}/unread")]
+    public async Task<IActionResult> GetUnreadByUserId(string userId)
+    {
+        var notifications = await _notificationService.GetUnreadByUserIdAsync(userId);
+        return Ok(notifications);
+    }
+    [HttpGet("user/{userId}/unread/count")]
+    public async Task<IActionResult> GetUnreadCount(string userId)
+    {
+        var count = await _notificationService.GetUnreadCountAsync(userId);
+        return Ok(new { count });
+    }
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] NotificationDto dto)
+    {
+        var result = await _notificationService.CreateAsync(dto);
+        if (!result.Success)
+        {
+            NotificationsCreatedCounter.WithLabels("failure").Inc();
+            return BadRequest(result.ErrorMessage);
+        }
+        NotificationsCreatedCounter.WithLabels("success").Inc();
+        return Created("", result);
+    }
+    [HttpPut("{id}/read")]
+    public async Task<IActionResult> MarkAsRead(string id)
+    {
+        var result = await _notificationService.MarkAsReadAsync(id);
+        if (!result) return NotFound("Bildirim bulunamadı.");
+        NotificationsReadCounter.Inc();
+        return Ok("Bildirim okundu olarak işaretlendi.");
+    }
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(string id)
+    {
+        var result = await _notificationService.DeleteAsync(id);
+        if (!result)
+        {
+            NotificationsDeletedCounter.WithLabels("failure").Inc();
+            return NotFound("Bildirim bulunamadı.");
+        }
+        NotificationsDeletedCounter.WithLabels("success").Inc();
+        return Ok("Bildirim silindi.");
+    }
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Api/Program.cs
+============================================================
+using MongoDB.Driver;
+using Prometheus;
+using NotificationService.Application.Repositories;
+using NotificationService.Application.Services;
+using NotificationService.Infrastructure.Repositories;
+using NotificationService.Infrastructure.Services;
+var builder = WebApplication.CreateBuilder(args);
+var mongoClient = new MongoClient("mongodb:
+var database = mongoClient.GetDatabase("notification_db");
+var notificationsCollection = database.GetCollection<NotificationService.Domain.Entities.Notification>("notifications");
+builder.Services.AddSingleton(notificationsCollection);
+builder.Services.AddScoped<INotificationRepository, MongoNotificationRepository>();
+builder.Services.AddScoped<INotificationService, NotificationServiceImpl>();
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+var app = builder.Build();
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+app.UseHttpMetrics();
+app.UseAuthorization();
+app.MapControllers();
+app.MapMetrics();
+app.Run();
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Application/DTOs/NotificationDto.cs
+============================================================
+namespace NotificationService.Application.DTOs;
+public record NotificationDto(string UserId, string Message, string Type);
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Application/DTOs/NotificationResult.cs
+============================================================
+namespace NotificationService.Application.DTOs;
+public record NotificationResult(bool Success, string? ErrorMessage);
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Application/Repositories/INotificationRepository.cs
+============================================================
+using NotificationService.Domain.Entities;
+namespace NotificationService.Application.Repositories;
+public interface INotificationRepository
+{
+    Task<List<Notification>> GetAllAsync();
+    Task<List<Notification>> GetByUserIdAsync(string userId);
+    Task<List<Notification>> GetUnreadByUserIdAsync(string userId);
+    Task<Notification?> GetByIdAsync(string id);
+    Task CreateAsync(Notification notification);
+    Task<bool> MarkAsReadAsync(string id);
+    Task<bool> DeleteAsync(string id);
+    Task<int> GetUnreadCountAsync(string userId);
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Application/Services/INotificationService.cs
+============================================================
+using NotificationService.Application.DTOs;
+using NotificationService.Domain.Entities;
+namespace NotificationService.Application.Services;
+public interface INotificationService
+{
+    Task<List<Notification>> GetAllAsync();
+    Task<List<Notification>> GetByUserIdAsync(string userId);
+    Task<List<Notification>> GetUnreadByUserIdAsync(string userId);
+    Task<int> GetUnreadCountAsync(string userId);
+    Task<NotificationResult> CreateAsync(NotificationDto dto);
+    Task<bool> MarkAsReadAsync(string id);
+    Task<bool> DeleteAsync(string id);
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Domain/Entities/Notification.cs
+============================================================
+namespace NotificationService.Domain.Entities;
+public class Notification
+{
+    public string Id { get; private set; }
+    public string UserId { get; private set; }
+    public string Message { get; private set; }
+    public string Type { get; private set; }
+    public bool IsRead { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public DateTime? ReadAt { get; private set; }
+    public Notification(string userId, string message, string type)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(userId);
+        ArgumentException.ThrowIfNullOrEmpty(message);
+        ArgumentException.ThrowIfNullOrEmpty(type);
+        Id = Guid.NewGuid().ToString();
+        UserId = userId;
+        Message = message;
+        Type = type;
+        IsRead = false;
+        CreatedAt = DateTime.UtcNow;
+    }
+    public void MarkAsRead()
+    {
+        IsRead = true;
+        ReadAt = DateTime.UtcNow;
+    }
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Infrastructure/Repositories/MongoNotificationRepository.cs
+============================================================
+using MongoDB.Driver;
+using NotificationService.Application.Repositories;
+using NotificationService.Domain.Entities;
+namespace NotificationService.Infrastructure.Repositories;
+public class MongoNotificationRepository : INotificationRepository
+{
+    private readonly IMongoCollection<Notification> _notifications;
+    public MongoNotificationRepository(IMongoCollection<Notification> notifications)
+    {
+        _notifications = notifications;
+    }
+    public async Task<List<Notification>> GetAllAsync()
+        => await _notifications.Find(_ => true).SortByDescending(n => n.CreatedAt).ToListAsync();
+    public async Task<List<Notification>> GetByUserIdAsync(string userId)
+        => await _notifications.Find(n => n.UserId == userId).ToListAsync();
+    public async Task<List<Notification>> GetUnreadByUserIdAsync(string userId)
+        => await _notifications.Find(n => n.UserId == userId && !n.IsRead).ToListAsync();
+    public async Task<Notification?> GetByIdAsync(string id)
+        => await _notifications.Find(n => n.Id == id).FirstOrDefaultAsync();
+    public async Task CreateAsync(Notification notification)
+        => await _notifications.InsertOneAsync(notification);
+    public async Task<bool> MarkAsReadAsync(string id)
+    {
+        var notification = await GetByIdAsync(id);
+        if (notification == null) return false;
+        notification.MarkAsRead();
+        var result = await _notifications.ReplaceOneAsync(n => n.Id == id, notification);
+        return result.MatchedCount > 0;
+    }
+    public async Task<bool> DeleteAsync(string id)
+    {
+        var result = await _notifications.DeleteOneAsync(n => n.Id == id);
+        return result.DeletedCount > 0;
+    }
+    public async Task<int> GetUnreadCountAsync(string userId)
+    {
+        var count = await _notifications.CountDocumentsAsync(n => n.UserId == userId && !n.IsRead);
+        return (int)count;
+    }
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Infrastructure/Services/NotificationServiceImpl.cs
+============================================================
+using NotificationService.Application.DTOs;
+using NotificationService.Application.Repositories;
+using NotificationService.Application.Services;
+using NotificationService.Domain.Entities;
+namespace NotificationService.Infrastructure.Services;
+public class NotificationServiceImpl : INotificationService
+{
+    private readonly INotificationRepository _repository;
+    public NotificationServiceImpl(INotificationRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Notification>> GetAllAsync()
+        => await _repository.GetAllAsync();
+    public async Task<List<Notification>> GetByUserIdAsync(string userId)
+        => await _repository.GetByUserIdAsync(userId);
+    public async Task<List<Notification>> GetUnreadByUserIdAsync(string userId)
+        => await _repository.GetUnreadByUserIdAsync(userId);
+    public async Task<int> GetUnreadCountAsync(string userId)
+        => await _repository.GetUnreadCountAsync(userId);
+    public async Task<NotificationResult> CreateAsync(NotificationDto dto)
+    {
+        var notification = new Notification(dto.UserId, dto.Message, dto.Type);
+        await _repository.CreateAsync(notification);
+        return new NotificationResult(true, null);
+    }
+    public async Task<bool> MarkAsReadAsync(string id)
+        => await _repository.MarkAsReadAsync(id);
+    public async Task<bool> DeleteAsync(string id)
+        => await _repository.DeleteAsync(id);
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Tests/NotificationRepositoryTests.cs
+============================================================
+using NotificationService.Application.Repositories;
+using NotificationService.Domain.Entities;
+namespace NotificationService.Tests;
+public class NotificationRepositoryTests
+{
+    [Fact]
+    public async Task GetAllAsync_ShouldReturnEmpty_WhenNoNotifications()
+    {
+        INotificationRepository repository = new FakeNotificationRepository();
+        var result = await repository.GetAllAsync();
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task CreateAsync_ShouldAddNotification_WhenCalled()
+    {
+        INotificationRepository repository = new FakeNotificationRepository();
+        var notification = new Notification("user-1", "Test mesajı", "Order");
+        await repository.CreateAsync(notification);
+        var result = await repository.GetAllAsync();
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task GetByUserIdAsync_ShouldReturnNotifications_WhenExists()
+    {
+        INotificationRepository repository = new FakeNotificationRepository();
+        var notification = new Notification("user-1", "Test mesajı", "Order");
+        await repository.CreateAsync(notification);
+        var result = await repository.GetByUserIdAsync("user-1");
+        Assert.Single(result);
+    }
+    [Fact]
+    public async Task MarkAsReadAsync_ShouldReturnTrue_WhenNotificationExists()
+    {
+        INotificationRepository repository = new FakeNotificationRepository();
+        var notification = new Notification("user-1", "Test mesajı", "Order");
+        await repository.CreateAsync(notification);
+        var result = await repository.MarkAsReadAsync(notification.Id);
+        Assert.True(result);
+    }
+    [Fact]
+public async Task GetUnreadByUserId_ShouldReturnUnread_WhenCalled()
+{
+    INotificationRepository repository = new FakeNotificationRepository();
+    var notification = new Notification("user-1", "Test mesajı", "Order");
+    await repository.CreateAsync(notification);
+    var result = await repository.GetUnreadByUserIdAsync("user-1");
+    Assert.Single(result);
+}
+[Fact]
+public async Task GetUnreadCount_ShouldReturnCorrectCount_WhenCalled()
+{
+    INotificationRepository repository = new FakeNotificationRepository();
+    await repository.CreateAsync(new Notification("user-1", "Mesaj 1", "Order"));
+    await repository.CreateAsync(new Notification("user-1", "Mesaj 2", "Payment"));
+    var result = await repository.GetUnreadCountAsync("user-1");
+    Assert.Equal(2, result);
+}
+}
+public class FakeNotificationRepository : INotificationRepository
+{
+    private readonly List<Notification> _notifications = new();
+    public Task<List<Notification>> GetAllAsync()
+        => Task.FromResult(_notifications.ToList());
+    public Task<List<Notification>> GetByUserIdAsync(string userId)
+        => Task.FromResult(_notifications.Where(n => n.UserId == userId).ToList());
+    public Task CreateAsync(Notification notification)
+    {
+        _notifications.Add(notification);
+        return Task.CompletedTask;
+    }
+    public Task<List<Notification>> GetUnreadByUserIdAsync(string userId)
+    => Task.FromResult(_notifications.Where(n => n.UserId == userId && !n.IsRead).ToList());
+public Task<Notification?> GetByIdAsync(string id)
+    => Task.FromResult(_notifications.FirstOrDefault(n => n.Id == id));
+public Task<int> GetUnreadCountAsync(string userId)
+    => Task.FromResult(_notifications.Count(n => n.UserId == userId && !n.IsRead));
+    public Task<bool> MarkAsReadAsync(string id)
+    {
+        var notification = _notifications.FirstOrDefault(n => n.Id == id);
+        if (notification == null) return Task.FromResult(false);
+        notification.MarkAsRead();
+        return Task.FromResult(true);
+    }
+    public Task<bool> DeleteAsync(string id)
+    {
+        var notification = _notifications.FirstOrDefault(n => n.Id == id);
+        if (notification == null) return Task.FromResult(false);
+        _notifications.Remove(notification);
+        return Task.FromResult(true);
+    }
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Tests/NotificationServiceTests.cs
+============================================================
+using NotificationService.Application.Repositories;
+using NotificationService.Application.Services;
+using NotificationService.Application.DTOs;
+using NotificationService.Domain.Entities;
+namespace NotificationService.Tests;
+public class NotificationServiceTests
+{
+    [Fact]
+    public async Task CreateNotification_ShouldReturnSuccess_WhenValid()
+    {
+        INotificationRepository repository = new FakeNotificationRepository();
+        INotificationService service = new FakeNotificationService(repository);
+        var result = await service.CreateAsync(new NotificationDto("user-1", "Siparişiniz onaylandı.", "Order"));
+        Assert.True(result.Success);
+    }
+    [Fact]
+    public async Task GetByUserId_ShouldReturnEmpty_WhenNoNotifications()
+    {
+        INotificationRepository repository = new FakeNotificationRepository();
+        INotificationService service = new FakeNotificationService(repository);
+        var result = await service.GetByUserIdAsync("user-1");
+        Assert.Empty(result);
+    }
+    [Fact]
+    public async Task MarkAsRead_ShouldReturnFalse_WhenNotFound()
+    {
+        INotificationRepository repository = new FakeNotificationRepository();
+        INotificationService service = new FakeNotificationService(repository);
+        var result = await service.MarkAsReadAsync("nonexistent-id");
+        Assert.False(result);
+    }
+    [Fact]
+public async Task GetUnreadByUserId_ShouldReturnUnread_WhenCalled()
+{
+    INotificationRepository repository = new FakeNotificationRepository();
+    INotificationService service = new FakeNotificationService(repository);
+    await service.CreateAsync(new NotificationDto("user-1", "Mesaj 1", "Order"));
+    var result = await service.GetUnreadByUserIdAsync("user-1");
+    Assert.Single(result);
+}
+[Fact]
+public async Task GetUnreadCount_ShouldReturnCorrectCount_WhenCalled()
+{
+    INotificationRepository repository = new FakeNotificationRepository();
+    INotificationService service = new FakeNotificationService(repository);
+    await service.CreateAsync(new NotificationDto("user-1", "Mesaj 1", "Order"));
+    await service.CreateAsync(new NotificationDto("user-1", "Mesaj 2", "Payment"));
+    var result = await service.GetUnreadCountAsync("user-1");
+    Assert.Equal(2, result);
+}
+}
+public class FakeNotificationService : INotificationService
+{
+    private readonly INotificationRepository _repository;
+    public FakeNotificationService(INotificationRepository repository)
+    {
+        _repository = repository;
+    }
+    public async Task<List<Notification>> GetByUserIdAsync(string userId)
+        => await _repository.GetByUserIdAsync(userId);
+    public async Task<NotificationResult> CreateAsync(NotificationDto dto)
+    {
+        var notification = new Notification(dto.UserId, dto.Message, dto.Type);
+        await _repository.CreateAsync(notification);
+        return new NotificationResult(true, null);
+    }
+    public async Task<List<Notification>> GetAllAsync()
+    => await _repository.GetAllAsync();
+public async Task<List<Notification>> GetUnreadByUserIdAsync(string userId)
+    => await _repository.GetUnreadByUserIdAsync(userId);
+public async Task<int> GetUnreadCountAsync(string userId)
+    => await _repository.GetUnreadCountAsync(userId);
+    public async Task<bool> MarkAsReadAsync(string id)
+        => await _repository.MarkAsReadAsync(id);
+    public async Task<bool> DeleteAsync(string id)
+        => await _repository.DeleteAsync(id);
+}
+
+============================================================
+DOSYA: services/NotificationService/NotificationService.Tests/NotificationTests.cs
+============================================================
+using NotificationService.Domain.Entities;
+namespace NotificationService.Tests;
+public class NotificationTests
+{
+    [Fact]
+    public void Notification_ShouldHaveUserId_WhenCreated()
+    {
+        var notification = new Notification("user-1", "Siparişiniz onaylandı.", "Order");
+        Assert.Equal("user-1", notification.UserId);
+    }
+    [Fact]
+    public void Notification_ShouldHaveMessage_WhenCreated()
+    {
+        var notification = new Notification("user-1", "Siparişiniz onaylandı.", "Order");
+        Assert.Equal("Siparişiniz onaylandı.", notification.Message);
+    }
+    [Fact]
+    public void Notification_ShouldBeUnread_WhenCreated()
+    {
+        var notification = new Notification("user-1", "Siparişiniz onaylandı.", "Order");
+        Assert.False(notification.IsRead);
+    }
+    [Fact]
+    public void Notification_ShouldHaveType_WhenCreated()
+    {
+        var notification = new Notification("user-1", "Siparişiniz onaylandı.", "Order");
+        Assert.Equal("Order", notification.Type);
+    }
+}
+
+============================================================
+DOSYA: load-test.js
+============================================================
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+export const options = {
+  stages: [
+    { duration: '30s', target: 50 },
+    { duration: '30s', target: 100 },
+    { duration: '30s', target: 200 },
+    { duration: '30s', target: 500 },
+    { duration: '30s', target: 0 },
+  ],
+  thresholds: {
+    http_req_duration: ['p(95)<500'],
+    http_req_failed: ['rate<0.05'],
+  },
+};
+const BASE_URL = 'http:
+const TEST_USERS = [
+  { email: 'test@test.com',       password: '123456' },
+  { email: 'ahmet@yazlab.com',    password: 'Ahmet123!' },
+  { email: 'mehmet@yazlab.com',   password: 'Mehmet123!' },
+  { email: 'ayse@yazlab.com',     password: 'Ayse123!' },
+  { email: 'fatma@yazlab.com',    password: 'Fatma123!' },
+  { email: 'ali@yazlab.com',      password: 'Ali123!' },
+  { email: 'veli@yazlab.com',     password: 'Veli123!' },
+  { email: 'zeynep@yazlab.com',   password: 'Zeynep123!' },
+  { email: 'elif@yazlab.com',     password: 'Elif123!' },
+];
+export function setup() {
+  const loginRes = http.post(`${BASE_URL}/auth/login`, JSON.stringify({
+    email: 'admin@yazlab.com',
+    password: 'Admin123!',
+  }), { headers: { 'Content-Type': 'application/json' } });
+  const token = JSON.parse(loginRes.body).token;
+  const productsRes = http.get(`${BASE_URL}/api/products`, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+  let productIds = [];
+  try {
+    const products = JSON.parse(productsRes.body);
+    productIds = products.map(p => p.id).filter(id => id);
+  } catch (_) {}
+  return { token, productIds };
+}
+export default function (data) {
+  const user = TEST_USERS[__VU % TEST_USERS.length];
+  const loginRes = http.post(`${BASE_URL}/auth/login`, JSON.stringify({
+    email: user.email,
+    password: user.password,
+  }), { headers: { 'Content-Type': 'application/json' } });
+  check(loginRes, { 'login 200': (r) => r.status === 200 });
+  let token = data.token;
+  try {
+    token = JSON.parse(loginRes.body).token || data.token;
+  } catch (_) {}
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`,
+  };
+  const productsRes = http.get(`${BASE_URL}/api/products`, { headers });
+  check(productsRes, {
+    'products 200': (r) => r.status === 200,
+    'products < 500ms': (r) => r.timings.duration < 500,
+  });
+  const productIds = data.productIds;
+  if (productIds && productIds.length > 0) {
+    const productId = productIds[Math.floor(Math.random() * productIds.length)];
+    const orderRes = http.post(`${BASE_URL}/api/orders`, JSON.stringify({
+      productId: productId,
+      quantity: Math.floor(Math.random() * 3) + 1,
+      customerEmail: user.email,
+    }), { headers });
+    check(orderRes, {
+      'order 201': (r) => r.status === 201,
+      'order < 500ms': (r) => r.timings.duration < 500,
+    });
+    if (__ITER % 3 === 0 && orderRes.status === 201) {
+      let orderId = null;
+      try { orderId = JSON.parse(orderRes.body).id; } catch (_) {}
+      if (orderId) {
+        const paymentRes = http.post(`${BASE_URL}/api/payments`, JSON.stringify({
+          orderId: orderId,
+          amount: Math.floor(Math.random() * 5000) + 500,
+          paymentMethod: 'credit_card',
+        }), { headers });
+        check(paymentRes, { 'payment 201': (r) => r.status === 201 });
+      }
+    }
+  }
+  if (__ITER % 5 === 0) {
+    http.post(`${BASE_URL}/api/notifications`, JSON.stringify({
+      userId: user.email,
+      message: `Siparişiniz alındı - ${new Date().toISOString()}`,
+      type: 'order',
+    }), { headers });
+  }
+  sleep(1);
+}
+
+============================================================
+DOSYA: docker-compose.yml
+============================================================
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - internal
+
+  dispatcher:
+    build:
+      context: ./gateway/Dispatcher
+      dockerfile: Dispatcher.Api/Dockerfile
+    container_name: dispatcher
+    ports:
+      - "5100:8080"
+    depends_on:
+      - mongodb
+    networks:
+      - internal
+      - external
+
+  auth-service:
+    build:
+      context: ./services/AuthService
+      dockerfile: AuthService.Api/Dockerfile
+    container_name: auth-service
+    depends_on:
+      - mongodb
+    networks:
+      - internal
+
+  product-service:
+    build:
+      context: ./services/ProductService
+      dockerfile: ProductService.Api/Dockerfile
+    container_name: product-service
+    depends_on:
+      - mongodb
+    networks:
+      - internal
+
+  order-service:
+    build:
+      context: ./services/OrderService
+      dockerfile: OrderService.Api/Dockerfile
+    container_name: order-service
+    depends_on:
+      - mongodb
+    networks:
+      - internal
+
+  notification-service:
+    build:
+      context: ./services/NotificationService
+      dockerfile: NotificationService.Api/Dockerfile
+    container_name: notification-service
+    depends_on:
+      - mongodb
+    networks:
+      - internal
+
+  payment-service:
+    build:
+      context: ./services/PaymentService
+      dockerfile: PaymentService.Api/Dockerfile
+    container_name: payment-service
+    depends_on:
+      - mongodb
+    networks:
+      - internal
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--storage.tsdb.retention.time=30d'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - internal
+      - external
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/etc/grafana/dashboards
+    networks:
+      - internal
+      - external
+
+volumes:
+  mongo_data:
+  grafana_data:
+  prometheus_data:
+
+networks:
+  internal:
+    internal: true
+  external:
+    internal: false
+
+============================================================
+DOSYA: prometheus.yml
+============================================================
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'dispatcher'
+    static_configs:
+      - targets: ['dispatcher:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'product-service'
+    static_configs:
+      - targets: ['product-service:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'order-service'
+    static_configs:
+      - targets: ['order-service:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['notification-service:8080']
+    metrics_path: '/metrics'
+
+  - job_name: 'payment-service'
+    static_configs:
+      - targets: ['payment-service:8080']
+    metrics_path: '/metrics'
+
